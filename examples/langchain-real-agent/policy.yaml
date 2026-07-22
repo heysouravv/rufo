@@ -1,0 +1,23 @@
+version: 1
+defaults:
+  action: allow
+
+rules:
+  - name: block_account_deletion
+    match:
+      tool: "close_account"
+    action: deny
+    reason: "account closure is never auto-allowed"
+
+  - name: approve_large_wires
+    match:
+      tool: "wire_transfer"
+    action: require_approval
+    conditions:
+      - "args['amount'] > 100"
+    reason: "wire transfers over $100 require human approval"
+
+limits:
+  - scope: global
+    max_calls: 100
+    per_seconds: 60

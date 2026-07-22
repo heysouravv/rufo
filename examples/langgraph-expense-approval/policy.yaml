@@ -1,0 +1,23 @@
+version: 1
+defaults:
+  action: allow
+
+rules:
+  - name: block_deletes
+    match:
+      tool: "delete_*"
+    action: deny
+    reason: "destructive tools are never auto-allowed"
+
+  - name: approve_large_refunds
+    match:
+      tool: "refund_payment"
+    action: require_approval
+    conditions:
+      - "args['amount'] > 100"
+    reason: "refunds over $100 require human approval"
+
+limits:
+  - scope: global
+    max_calls: 100
+    per_seconds: 60

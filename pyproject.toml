@@ -1,0 +1,18 @@
+[project]
+name = "rufo-workspace"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "langchain-openai>=0.2",
+    "python-dotenv>=1.0",
+]
+
+[tool.uv.workspace]
+members = ["packages/*", "control-plane"]
+
+[tool.uv.sources]
+rufo-core = { workspace = true }
+rufo-sdk = { workspace = true }
+rufo-runtime = { workspace = true }
+rufo-cli = { workspace = true }
+rufo-control-plane = { workspace = true }
