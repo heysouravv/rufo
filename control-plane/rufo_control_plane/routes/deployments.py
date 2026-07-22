@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -17,6 +18,12 @@ class DeployRequest(BaseModel):
     image: str
     port: int = 8080
     env: dict[str, str] = {}
+    # Names only, never values: the client asks for a secret *by name* and the
+    # control plane fills in the real value from its own process environment.
+    # This is a dev-mode shortcut (one shared secret store, the operator's
+    # own env) -- real multi-tenant secret management needs a per-org secret
+    # store (e.g. Secret Manager), not a single shared server-side env.
+    secret_env_from_server: list[str] = []
     min_instances: int = 0
     max_instances: int = 5
 
@@ -48,6 +55,14 @@ def build_router(settings: Settings, store: ControlPlaneStore, auth_dependency) 
     @router.post("")
     def create_deployment(req: DeployRequest, auth: AuthContext = Depends(auth_dependency)) -> dict:
         service_id = _service_id_for(auth.org_id, req.agent_name)
+
+        env = dict(req.env)
+        for name in req.secret_env_from_server:
+            value = os.environ.get(name)
+            if not value:
+                raise HTTPException(status_code=400, detail=f"server has no value for secret '{name}'")
+            env[name] = value
+
         try:
             result = deploy_service(
                 project_id=settings.gcp_project_id,
@@ -55,7 +70,7 @@ def build_router(settings: Settings, store: ControlPlaneStore, auth_dependency) 
                 service_id=service_id,
                 image=req.image,
                 port=req.port,
-                env=req.env,
+                env=env,
                 labels={
                     "app": "rufo",
                     "managed-by": "rufo-control-plane",

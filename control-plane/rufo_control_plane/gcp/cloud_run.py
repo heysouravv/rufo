@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from google.api_core.exceptions import NotFound
-from google.cloud import run_v2
+from google.cloud import artifactregistry_v1, run_v2
+
+_TAGGED_IMAGE_RE = re.compile(
+    r"^(?P<host>[^/]+)/(?P<project>[^/]+)/(?P<repo>[^/]+)/(?P<pkg>.+):(?P<tag>[^:/]+)$"
+)
 
 
 @dataclass(frozen=True)
@@ -18,6 +23,31 @@ def _client() -> run_v2.ServicesClient:
 
 def _service_path(project_id: str, region: str, service_id: str) -> str:
     return f"projects/{project_id}/locations/{region}/services/{service_id}"
+
+
+def resolve_image_digest(image: str) -> str:
+    """Resolve a mutable `...:tag` reference to an immutable `...@sha256:...`
+    one. Deploying by a mutable tag proved unreliable in practice: a real
+    live test re-deployed to the same tag right after pushing a fix, and
+    Cloud Run served a stale cached digest for that tag instead of the new
+    one -- silently running old, broken code. Already-pinned references
+    (containing `@sha256:`) pass through unchanged.
+    """
+    if "@sha256:" in image:
+        return image
+
+    match = _TAGGED_IMAGE_RE.match(image)
+    if not match:
+        return image  # not a recognizable Artifact Registry tag -- best effort
+
+    host, project, repo, pkg, tag = match.groups()
+    location = host.split("-docker.pkg.dev")[0]
+
+    client = artifactregistry_v1.ArtifactRegistryClient()
+    tag_name = f"projects/{project}/locations/{location}/repositories/{repo}/packages/{pkg}/tags/{tag}"
+    resolved_tag = client.get_tag(name=tag_name)
+    digest = resolved_tag.version.rsplit("/", 1)[-1]  # ".../versions/sha256:..."
+    return f"{host}/{project}/{repo}/{pkg}@{digest}"
 
 
 def deploy_service(
@@ -47,6 +77,7 @@ def deploy_service(
     """
     client = _client()
     parent = f"projects/{project_id}/locations/{region}"
+    image = resolve_image_digest(image)
 
     container = run_v2.Container(
         image=image,

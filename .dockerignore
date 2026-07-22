@@ -1,0 +1,10 @@
+.venv
+.git
+__pycache__
+*.pyc
+.pytest_cache
+rufo_data
+rufo_control_plane_data
+*.db
+.env
+control-plane/tests

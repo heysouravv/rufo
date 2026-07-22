@@ -24,6 +24,9 @@ packages/
   rufo-sdk      framework adapters (LangGraph native interrupt(), LangChain, generic)
   rufo-runtime  FastAPI service that hosts your agent + approval queue + audit log
   rufo-cli      `rufo init` / `rufo deploy` / `rufo approvals` / `rufo logs`
+control-plane/
+  rufo-control-plane   Clerk-authenticated, org-scoped API that deploys agents
+                       to Google Cloud Run ("Rufo Cloud" hosted offering)
 examples/
   langgraph-expense-approval   hand-driven LangGraph example (no LLM, deterministic)
   langgraph-real-agent         real GPT-4o-mini tool-calling agent via create_react_agent
@@ -65,6 +68,43 @@ two different frameworks at once.
     this surface fails immediately with a clear `409 rufo_approval_required`
     error rather than hanging or silently changing behavior — use the
     workflow surface for agents whose policy needs approval gates.
+
+## Rufo Cloud (control plane)
+
+`control-plane/` is a separate service, not something `rufo deploy` talks to
+locally: a Clerk-authenticated, org-scoped API that deploys a container image
+to Google Cloud Run and tracks it in its own SQLite store. It's the hosted
+counterpart to the self-hosted `rufo-runtime` above, not a replacement for it.
+
+- **Auth**: `auth.py` verifies Clerk session JWTs against the org's real JWKS
+  (`https://<frontend-api>/.well-known/jwks.json`, resolved from the
+  publishable key) — no per-request call to Clerk's backend API. Every route
+  requires an active organization (`org_id` claim); all data is org-scoped.
+- **Cloud Run**: `gcp/cloud_run.py` creates/updates/deletes services via the
+  real Cloud Run Admin API client, labels every service for cost tracking
+  (`app`, `managed-by`, an org fingerprint, `agent`), and deploys **without**
+  public (`allUsers`) access by default — both because a domain-restricted
+  org policy can reject that binding outright, and because it's the right
+  default anyway: the control plane should be the sole authenticated caller
+  into a customer's service, not the raw internet.
+- **Secrets**: a deploy request asks for a secret **by name**
+  (`secret_env_from_server: ["OPENAI_API_KEY"]`) and the control plane fills
+  in the real value from its own process environment — the value never
+  passes through the client. This is a dev-mode shortcut (one shared secret
+  store); real multi-tenant secret management needs a per-org secret store.
+- **Image references are always resolved to a digest** before deploying,
+  even if the caller passes a mutable `:tag`. A live test caught this the
+  hard way: redeploying to the same `:latest` tag right after pushing a fix
+  still ran the old, broken image — Cloud Run served a stale digest for that
+  tag. `resolve_image_digest()` looks up the real digest via the Artifact
+  Registry API first.
+
+**Verified live end-to-end**, not just unit-tested: a real Clerk sign-in
+(Google OAuth) → a real organization created and activated → a real session
+token → authenticated calls that built and pushed a real container image,
+deployed it to a real Cloud Run service, invoked the live guarded agent
+(`/v1/chat/completions`, both an allowed tool call and a policy-denied one),
+listed and deleted the deployment, all confirmed independently via `gcloud`.
 
 ## Config: rufo.toml + rufo.yaml
 
@@ -209,13 +249,22 @@ limits:
 
 This is a working MVP, not a finished product:
 
-- **Persistence** is SQLite (approvals/audit) and LangGraph's in-memory
-  checkpointer — fine for one runtime instance, not for multi-instance
-  deployments. A Postgres/Redis backend is the natural next step.
-- **Docker/container/sandbox packaging** isn't wired up yet — `rufo deploy`
-  runs the runtime as a foreground process today. Hosted deploy is planned on
-  Google Cloud Run (gVisor-isolated by default), which will force a durable
-  Postgres/Redis LangGraph checkpointer in place of `MemorySaver`.
+- **Persistence** is SQLite (approvals/audit, and the control plane's own
+  deployment store) and LangGraph's in-memory checkpointer — fine for one
+  runtime instance, not for multi-instance deployments or Cloud Run's
+  scale-to-zero. A Postgres/Redis backend is the natural next step, and is
+  now a hard requirement (not just a nice-to-have) for hosting real
+  approval-gated agents on Cloud Run, where an idle instance can be reclaimed
+  between requests.
+- **The Dockerfile syncs the full uv workspace**, not just `rufo-runtime`'s
+  own deps — example agents depend on `langchain-openai`/`python-dotenv`
+  declared at the root workspace level for local dev, and scoping the image
+  build too tightly left those missing at runtime (caught by a real deploy
+  failure). Giving each example its own minimal `pyproject.toml` would let
+  this be scoped tightly again without losing agent-specific dependencies.
+- **`rufo deploy --docker` / local container packaging isn't wired up** —
+  only the control plane (Cloud Run) deploys containers today; the local CLI
+  still runs the runtime as a foreground process.
 - **Streaming is word-chunked after the full response completes**, not true
   per-token streaming from the model — spec-compliant SSE, but not real
   incremental generation yet. A `stream_mode="messages"` based implementation
@@ -227,6 +276,12 @@ This is a working MVP, not a finished product:
   generic `guard()` decorator works with any plain callable, but a
   framework-specific adapter (mirroring how tool registration works in each)
   is worth adding once there's real usage pressure.
-- **No web dashboard** — approvals/audit are CLI + REST only for now.
-- **No Clerk/multi-tenant auth** — the runtime has no auth at all yet; fine
-  for local/self-hosted single-tenant use, required before any hosted offering.
+- **No web dashboard** — approvals/audit are CLI + REST only for now; the
+  control plane's deployments API has no UI in front of it yet either.
+- **The self-hosted `rufo-runtime` still has no auth** — fine for
+  local/self-hosted single-tenant use; Clerk auth exists only in the
+  control plane so far.
+- **The Cloud Run integration is single-tenant-per-project for now** — every
+  org's services live in one GCP project (`rufo-cloud-06179` in dev). Real
+  per-org isolation (the "dedicated sandbox pool" enterprise tier) needs
+  per-org projects/VPCs, not just IAM-level org-scoping.
