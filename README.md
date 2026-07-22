@@ -98,13 +98,26 @@ counterpart to the self-hosted `rufo-runtime` above, not a replacement for it.
   still ran the old, broken image — Cloud Run served a stale digest for that
   tag. `resolve_image_digest()` looks up the real digest via the Artifact
   Registry API first.
+- **Cost attribution** (`GET /costs`): a per-agent cost breakdown using Cloud
+  Run's own `billable_instance_time` metric (the same one Google bills on,
+  pulled via Cloud Monitoring) — not an estimate derived from measured
+  request duration — multiplied by the service's real CPU/memory allocation
+  at the pricing model's customer-facing rates.
 
 **Verified live end-to-end**, not just unit-tested: a real Clerk sign-in
 (Google OAuth) → a real organization created and activated → a real session
 token → authenticated calls that built and pushed a real container image,
 deployed it to a real Cloud Run service, invoked the live guarded agent
 (`/v1/chat/completions`, both an allowed tool call and a policy-denied one),
+pulled a real per-agent cost figure from real Cloud Monitoring billing data,
 listed and deleted the deployment, all confirmed independently via `gcloud`.
+
+One thing this surfaced: the control plane's SQLite deployment store isn't
+just disposable test residue — it's the only record tying a real running
+Cloud Run service back to an org. Deleting it during "cleanup" orphaned a
+still-running deployment until a redeploy (idempotent, since the image
+digest was unchanged) re-registered it. Real motivation for the Postgres
+migration already planned, not just a nice-to-have.
 
 ## Config: rufo.toml + rufo.yaml
 
