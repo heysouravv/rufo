@@ -62,6 +62,7 @@ def deploy_service(
     min_instances: int = 0,
     max_instances: int = 5,
     invoker_members: list[str] | None = None,
+    service_account: str | None = None,
 ) -> CloudRunDeployResult:
     """Create or update a Cloud Run service. Idempotent: re-running with the
     same service_id updates the existing service (a new revision) instead of
@@ -89,6 +90,7 @@ def deploy_service(
         scaling=run_v2.RevisionScaling(
             min_instance_count=min_instances, max_instance_count=max_instances
         ),
+        service_account=service_account or None,
     )
     service = run_v2.Service(template=template, labels=labels)
 

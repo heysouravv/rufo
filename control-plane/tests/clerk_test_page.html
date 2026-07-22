@@ -62,7 +62,7 @@
 
       document.getElementById('deploy-agent').addEventListener('click', async () => {
         document.getElementById('output').textContent = 'deploying...';
-        const resp = await authedFetch('/deployments', {
+        const resp = await authedFetch('/api/deployments', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -77,14 +77,14 @@
       });
 
       document.getElementById('list-deployments').addEventListener('click', async () => {
-        const resp = await authedFetch('/deployments');
+        const resp = await authedFetch('/api/deployments');
         const body = await resp.json();
         document.getElementById('output').textContent = JSON.stringify({ status: resp.status, body }, null, 2);
       });
 
       document.getElementById('get-costs').addEventListener('click', async () => {
         document.getElementById('output').textContent = 'loading costs...';
-        const resp = await authedFetch('/costs?window_hours=24');
+        const resp = await authedFetch('/api/costs?window_hours=24');
         const body = await resp.json();
         document.getElementById('output').textContent = JSON.stringify({ status: resp.status, body }, null, 2);
       });

@@ -25,6 +25,12 @@ class Settings(BaseSettings):
 
     db_path: str = "./rufo_control_plane_data/control_plane.db"
 
+    cors_origins: str = "http://localhost:8901,https://rufo.eldridgemorgan.com"
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
 
 def load_settings() -> Settings:
     return Settings()

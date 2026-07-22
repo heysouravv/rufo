@@ -14,30 +14,35 @@ store = ControlPlaneStore(settings.db_path)
 
 app = FastAPI(title="rufo-control-plane")
 
-# Dev-only: allow the local browser-based Clerk test harness to call this API
-# directly from a different localhost port. Tighten to real dashboard origins
-# before this is ever exposed beyond localhost.
+# The dashboard talks to this API same-origin in production (both live behind
+# rufo.eldridgemorgan.com via the Load Balancer's path routing), so CORS only
+# matters for local dev -- the standalone Clerk test harness on :8901, or a
+# locally-run dashboard on a different port. Configurable via RUFO_CP_CORS_ORIGINS
+# for any origin not covered by the default.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8901"],
+    allow_origins=settings.cors_origin_list,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Mounted under /api so the Load Balancer's URL map can route with a single
+# path-matcher rule (/api/* -> control-plane, everything else -> dashboard)
+# instead of enumerating every route.
 if settings.clerk_publishable_key:
     verifier = ClerkVerifier(settings.clerk_publishable_key)
     auth_dependency = require_auth(verifier)
-    app.include_router(build_router(settings, store, auth_dependency))
-    app.include_router(build_costs_router(settings, store, auth_dependency))
+    app.include_router(build_router(settings, store, auth_dependency), prefix="/api")
+    app.include_router(build_costs_router(settings, store, auth_dependency), prefix="/api")
 else:
     # No Clerk key configured yet -- expose nothing rather than an unauthenticated API.
-    @app.get("/deployments", tags=["deployments"])
+    @app.get("/api/deployments", tags=["deployments"])
     def _deployments_disabled() -> dict:
         return {
             "error": "CLERK_PUBLISHABLE_KEY is not set -- the deployments API is disabled until Clerk is configured."
         }
 
 
-@app.get("/healthz")
+@app.get("/api/healthz")
 def healthz() -> dict:
     return {"status": "ok", "project": settings.gcp_project_id, "region": settings.gcp_region}
