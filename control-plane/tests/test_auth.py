@@ -32,7 +32,7 @@ def _make_token(private_key, kid: str, claims: dict) -> str:
     return jwt.encode(claims, private_key, algorithm="RS256", headers={"kid": kid})
 
 
-def test_verify_accepts_valid_token_with_org(monkeypatch, rsa_keypair):
+def test_verify_accepts_valid_token_with_org_v1_flat_shape(monkeypatch, rsa_keypair):
     private_key, public_key = rsa_keypair
     verifier = ClerkVerifier.__new__(ClerkVerifier)  # bypass __init__ (no network JWKS fetch)
     verifier.frontend_api = "example.clerk.accounts.dev"
@@ -55,6 +55,42 @@ def test_verify_accepts_valid_token_with_org(monkeypatch, rsa_keypair):
     ctx = verifier.verify(token)
     assert ctx.user_id == "user_123"
     assert ctx.org_id == "org_456"
+    assert ctx.org_role == "admin"
+
+
+def test_verify_accepts_valid_token_with_org_v2_nested_shape(rsa_keypair):
+    """A real production Clerk instance issued this exact shape
+    (`"v": 2`, org nested under `"o"`) and our original flat-claims-only
+    code 403'd on it despite the org genuinely being active -- caught by
+    decoding a real token from a live 403, not by a spec."""
+    private_key, public_key = rsa_keypair
+    verifier = ClerkVerifier.__new__(ClerkVerifier)
+    verifier.frontend_api = "clerk.rufo.eldridgemorgan.com"
+
+    class FakeSigningKey:
+        key = public_key
+
+    class FakeJwkClient:
+        def get_signing_key_from_jwt(self, token):
+            return FakeSigningKey()
+
+    verifier._jwk_client = FakeJwkClient()
+
+    token = _make_token(
+        private_key,
+        kid="test-key",
+        claims={
+            "sub": "user_3GwBWnEP0OxUuhjTgMEObvbYdXT",
+            "o": {"id": "org_3GwBXSYdKAdFiDSQiJPijF84WrB", "rol": "admin", "slg": "eldridge-morgan"},
+            "v": 2,
+            "iat": int(time.time()),
+            "exp": int(time.time()) + 300,
+        },
+    )
+
+    ctx = verifier.verify(token)
+    assert ctx.user_id == "user_3GwBWnEP0OxUuhjTgMEObvbYdXT"
+    assert ctx.org_id == "org_3GwBXSYdKAdFiDSQiJPijF84WrB"
     assert ctx.org_role == "admin"
 
 

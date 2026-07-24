@@ -27,6 +27,26 @@ def frontend_api_from_publishable_key(publishable_key: str) -> str:
     return decoded.rstrip("$")
 
 
+def _extract_org(claims: dict) -> tuple[str | None, str | None]:
+    """Clerk has two session-token claim shapes for organization data:
+
+    - v1/legacy: flat `org_id` / `org_role` claims (what the original dev/test
+      Clerk instance used during development).
+    - v2 (`"v": 2` in the token): compact nested `"o": {"id": ..., "rol": ...}`
+      (what a freshly-created production instance issues by default) --
+      caught live when a real production sign-in kept 403ing with "no active
+      organization" despite the org existing and being active; decoding the
+      actual token showed the org was there all along, just nested.
+
+    Check v2 first since it's what new instances default to; fall back to
+    the legacy flat claims for instances still issuing v1 tokens.
+    """
+    org = claims.get("o")
+    if isinstance(org, dict) and org.get("id"):
+        return org["id"], org.get("rol")
+    return claims.get("org_id"), claims.get("org_role")
+
+
 class ClerkVerifier:
     """Networkless verification of Clerk session JWTs via the instance's JWKS.
 
@@ -52,14 +72,14 @@ class ClerkVerifier:
         except jwt.PyJWTError as exc:
             raise HTTPException(status_code=401, detail=f"invalid session token: {exc}") from exc
 
-        org_id = claims.get("org_id")
+        org_id, org_role = _extract_org(claims)
         if not org_id:
             raise HTTPException(
                 status_code=403,
                 detail="session token has no active organization -- select/create an org in Clerk first",
             )
 
-        return AuthContext(user_id=claims["sub"], org_id=org_id, org_role=claims.get("org_role"))
+        return AuthContext(user_id=claims["sub"], org_id=org_id, org_role=org_role)
 
 
 def require_auth(verifier: ClerkVerifier):
