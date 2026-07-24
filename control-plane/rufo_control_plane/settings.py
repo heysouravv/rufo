@@ -40,6 +40,18 @@ class Settings(BaseSettings):
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
+    @property
+    def agent_database_url(self) -> str | None:
+        """DSN for a deployed agent's PostgresSaver, reaching Cloud SQL over
+        the Unix socket Cloud Run mounts when `cloudsql_instances` is passed
+        to deploy_service -- not a public-IP connection string."""
+        if not self.db_instance_connection_name:
+            return None
+        return (
+            f"postgresql://{self.db_user}:{self.db_password}@/{self.db_name}"
+            f"?host=/cloudsql/{self.db_instance_connection_name}"
+        )
+
 
 def load_settings() -> Settings:
     return Settings()

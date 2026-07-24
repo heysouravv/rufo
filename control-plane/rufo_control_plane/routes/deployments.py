@@ -51,6 +51,16 @@ def _service_id_for(org_id: str, agent_name: str) -> str:
     return service_id[:49].rstrip("-")
 
 
+def infra_env_for(settings: Settings) -> tuple[dict[str, str], list[str] | None]:
+    """Extra env vars + Cloud SQL instances every deployed agent should get so
+    `get_checkpointer()` picks up a durable PostgresSaver automatically --
+    unused (empty env, no instances) until db_instance_connection_name is set."""
+    database_url = settings.agent_database_url
+    if database_url is None:
+        return {}, None
+    return {"DATABASE_URL": database_url}, [settings.db_instance_connection_name]
+
+
 def build_router(settings: Settings, store: ControlPlaneStore, auth_dependency) -> APIRouter:
     router = APIRouter(prefix="/deployments", tags=["deployments"])
 
@@ -68,6 +78,9 @@ def build_router(settings: Settings, store: ControlPlaneStore, auth_dependency) 
                 )
             env[name] = value
 
+        infra_env, cloudsql_instances = infra_env_for(settings)
+        env.update(infra_env)
+
         try:
             result = deploy_service(
                 project_id=settings.gcp_project_id,
@@ -84,6 +97,7 @@ def build_router(settings: Settings, store: ControlPlaneStore, auth_dependency) 
                 },
                 min_instances=req.min_instances,
                 max_instances=req.max_instances,
+                cloudsql_instances=cloudsql_instances,
             )
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"Cloud Run deploy failed: {exc}") from exc

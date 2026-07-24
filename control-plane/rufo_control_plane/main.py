@@ -8,6 +8,7 @@ from rufo_control_plane.routes.costs import build_router as build_costs_router
 from rufo_control_plane.routes.deployments import build_router
 from rufo_control_plane.routes.device_auth import build_router as build_device_auth_router
 from rufo_control_plane.routes.secrets import build_router as build_secrets_router
+from rufo_control_plane.routes.source_deploy import build_router as build_source_deploy_router
 from rufo_control_plane.settings import load_settings
 from rufo_control_plane.store import create_store
 
@@ -44,6 +45,7 @@ if settings.clerk_publishable_key:
     app.include_router(build_costs_router(settings, store, auth_dependency), prefix="/api")
     app.include_router(build_secrets_router(store, auth_dependency), prefix="/api")
     app.include_router(build_device_auth_router(store, clerk_only_auth_dependency), prefix="/api")
+    app.include_router(build_source_deploy_router(settings, store, auth_dependency), prefix="/api")
 else:
     # No Clerk key configured yet -- expose nothing rather than an unauthenticated API.
     @app.get("/api/deployments", tags=["deployments"])

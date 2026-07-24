@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import os
+import tarfile
 import time
 import webbrowser
 from pathlib import Path
@@ -69,6 +71,59 @@ def _require_cloud_credentials(url_override: str | None) -> tuple[str, str]:
     return url_override or creds["url"], creds["token"]
 
 
+# Never worth shipping to a build context: VCS metadata, caches, local venvs,
+# and the runtime's own local-mode data directory.
+_TAR_EXCLUDE_DIR_NAMES = {".git", "__pycache__", ".venv", "venv", "node_modules", "rufo_data", ".mypy_cache", ".pytest_cache"}
+
+
+def _tar_agent_dir(agent_dir: Path) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for path in sorted(agent_dir.rglob("*")):
+            if path.is_dir():
+                continue
+            rel = path.relative_to(agent_dir)
+            if _TAR_EXCLUDE_DIR_NAMES & set(rel.parts[:-1]):
+                continue
+            tar.add(path, arcname=str(rel))
+    return buf.getvalue()
+
+
+def _deploy_cloud(target: Path, url_override: str | None) -> None:
+    agent_dir = target if target.is_dir() else target.parent
+    manifest_path = agent_dir / "rufo.toml"
+    if not manifest_path.exists():
+        console.print(f"[red]no rufo.toml found in[/red] {agent_dir}")
+        raise typer.Exit(1)
+
+    base_url, token = _require_cloud_credentials(url_override)
+    tar_bytes = _tar_agent_dir(agent_dir)
+    console.print(f"[dim]uploading {agent_dir} ({len(tar_bytes)} bytes) to {base_url}...[/dim]")
+
+    with console.status("Building and deploying (this can take a few minutes)..."):
+        try:
+            resp = requests.post(
+                f"{base_url}/api/deployments/from-source",
+                headers={"Authorization": f"Bearer {token}"},
+                files={"source": ("agent.tar.gz", tar_bytes, "application/gzip")},
+                timeout=900,
+            )
+        except requests.RequestException as exc:
+            console.print(f"[red]could not reach {base_url}:[/red] {exc}")
+            raise typer.Exit(1) from exc
+
+    if not resp.ok:
+        try:
+            detail = resp.json().get("detail", resp.text)
+        except ValueError:
+            detail = resp.text
+        console.print(f"[red]deploy failed ({resp.status_code}):[/red] {detail}")
+        raise typer.Exit(1)
+
+    body = resp.json()
+    console.print(f"[green]Deployed.[/green] {body.get('agent_name')} -> [bold]{body.get('uri')}[/bold]")
+
+
 @app.command()
 def init(dir: Path = typer.Argument(Path("."), help="Directory to scaffold into.")) -> None:
     """Scaffold a starter policy.yaml, rufo.toml, rufo.yaml, and example LangGraph agent."""
@@ -90,13 +145,24 @@ def deploy(
     entrypoint: str = typer.Option(None, "--entrypoint", "-e", help="Override the entrypoint attribute name"),
     port: int = typer.Option(8000, "--port", help="Port to serve the runtime on"),
     db: Path = typer.Option(Path("./rufo_data/rufo.db"), "--db", help="SQLite path for approvals/audit"),
+    cloud: bool = typer.Option(
+        False, "--cloud", help="Deploy to Rufo Cloud instead of running locally (requires `rufo login`)"
+    ),
+    url: str = typer.Option(None, "--url", help="Rufo Cloud control-plane URL (defaults to the one used at login)"),
 ) -> None:
     """Deploy an agent behind the Rufo runtime: policy enforcement, approval
-    queue, audit log, and an OpenAI-compatible /v1/chat/completions endpoint,
-    served over HTTP. Reads rufo.toml/rufo.yaml if the target is a directory
-    (or contains one); otherwise falls back to a plain .py file + --policy.
-    This runs the runtime in the foreground -- Ctrl-C to stop.
+    queue, audit log, and an OpenAI-compatible /v1/chat/completions endpoint.
+    Reads rufo.toml/rufo.yaml if the target is a directory (or contains one);
+    otherwise falls back to a plain .py file + --policy.
+
+    By default this runs the runtime locally in the foreground (Ctrl-C to
+    stop). Pass --cloud to instead upload the agent directory to Rufo Cloud
+    and have it built and deployed to Cloud Run.
     """
+    if cloud:
+        _deploy_cloud(target, url)
+        return
+
     agent_dir = target if target.is_dir() else target.parent
     manifest_path = agent_dir / "rufo.toml"
     deploy_config_path = agent_dir / "rufo.yaml"
