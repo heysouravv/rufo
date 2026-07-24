@@ -63,8 +63,8 @@ export default function DashboardPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-8 px-6 py-10">
-      <header className="flex items-center justify-between">
-        <span className="text-lg font-semibold tracking-tight text-neutral-900">
+      <header className="flex items-center justify-between border-b border-black pb-4">
+        <span className="text-lg font-semibold tracking-tight text-black">
           Rufo
         </span>
         <div className="flex items-center gap-3">
@@ -74,31 +74,31 @@ export default function DashboardPage() {
       </header>
 
       {!orgId && (
-        <p className="text-sm text-neutral-500">
+        <p className="text-sm text-black/60">
           Select or create an organization to see its deployments.
         </p>
       )}
 
       {error && (
-        <p className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        <p className="rounded-lg border border-black px-4 py-3 text-sm text-black">
           {error}
         </p>
       )}
 
       {orgId && !deployments && !error && (
-        <p className="text-sm text-neutral-500">Loading deployments…</p>
+        <p className="text-sm text-black/60">Loading deployments…</p>
       )}
 
       {deployments && deployments.length === 0 && (
-        <p className="text-sm text-neutral-500">
+        <p className="text-sm text-black/60">
           No agents deployed yet for this organization.
         </p>
       )}
 
       {deployments && deployments.length > 0 && (
-        <div className="overflow-x-auto rounded-xl border border-neutral-200">
+        <div className="overflow-x-auto rounded-xl border border-black">
           <table className="w-full text-left text-sm">
-            <thead className="border-b border-neutral-200 bg-neutral-50 text-xs uppercase tracking-wide text-neutral-500">
+            <thead className="border-b border-black text-xs uppercase tracking-wide text-black/60">
               <tr>
                 <th className="px-4 py-3 font-medium">Agent</th>
                 <th className="px-4 py-3 font-medium">Status</th>
@@ -112,20 +112,20 @@ export default function DashboardPage() {
               {deployments.map((d) => {
                 const cost = costByService.get(d.service_id);
                 return (
-                  <tr key={d.id} className="border-b border-neutral-100 last:border-0">
-                    <td className="px-4 py-3 font-medium text-neutral-900">
+                  <tr key={d.id} className="border-b border-black/10 last:border-0">
+                    <td className="px-4 py-3 font-medium text-black">
                       {d.agent_name}
                     </td>
                     <td className="px-4 py-3">
-                      <span className="inline-flex items-center gap-1.5 rounded-full bg-green-50 px-2 py-0.5 text-xs font-medium text-green-700">
-                        <span className="h-1.5 w-1.5 rounded-full bg-green-500" />
+                      <span className="inline-flex items-center gap-1.5 rounded-full border border-black px-2 py-0.5 text-xs font-medium text-black">
+                        <span className="h-1.5 w-1.5 rounded-full bg-black" />
                         {d.status}
                       </span>
                     </td>
-                    <td className="px-4 py-3 font-mono text-xs text-neutral-500">
+                    <td className="px-4 py-3 font-mono text-xs text-black/60">
                       {d.uri ?? "—"}
                     </td>
-                    <td className="px-4 py-3 text-right font-mono tabular-nums text-neutral-700">
+                    <td className="px-4 py-3 text-right font-mono tabular-nums text-black">
                       {cost ? `$${cost.estimated_cost_usd.toFixed(4)}` : "—"}
                     </td>
                   </tr>

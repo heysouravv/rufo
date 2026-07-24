@@ -63,18 +63,33 @@ def deploy_service(
     max_instances: int = 5,
     invoker_members: list[str] | None = None,
     service_account: str | None = None,
+    ingress: run_v2.IngressTraffic | None = None,
+    invoker_iam_disabled: bool = False,
 ) -> CloudRunDeployResult:
     """Create or update a Cloud Run service. Idempotent: re-running with the
     same service_id updates the existing service (a new revision) instead of
     failing on 'already exists'.
 
-    Services are deployed *without* public (`allUsers`) access -- the
-    `eldridgemorgan.com` org enforces a domain-restricted-sharing policy that
-    rejects that binding outright, and it's the right default anyway: the
-    control plane should be the sole authenticated caller into each
-    customer's Cloud Run service (its own gateway/proxy), not the raw
-    internet. Pass `invoker_members` (e.g. the control plane's own service
-    account) to grant specific callers `roles/run.invoker`.
+    Customer *agent* services (the default: `ingress=None` -> Cloud Run's
+    default INGRESS_TRAFFIC_ALL, `invoker_iam_disabled=False`) are deployed
+    *without* public (`allUsers`) access -- the `eldridgemorgan.com` org's
+    domain-restricted-sharing policy rejects that binding outright, and it's
+    the right default anyway: the control plane should be the sole
+    authenticated caller into each customer's service, not the raw internet.
+    Pass `invoker_members` to grant specific callers `roles/run.invoker`.
+
+    Rufo's own *platform* services (control plane, dashboard) sitting behind
+    the public Load Balancer need the opposite: `ingress=
+    INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER` (blocks direct .run.app access at
+    the network layer) plus `invoker_iam_disabled=True` (lets the load
+    balancer's serverless-NEG integration reach the service at all --
+    ingress alone wasn't sufficient in practice; a real 403 from Google
+    Frontend confirmed the IAM invoker check still applies independently of
+    the ingress restriction). Both must be set through this one call: doing
+    it via separate `gcloud services update` commands after the fact is
+    fragile since each subsequent update to unrelated fields (a redeploy, a
+    service-account change) silently resets ingress back to ALL unless it's
+    included in the same request -- caught live, twice, in this exact repo.
     """
     client = _client()
     parent = f"projects/{project_id}/locations/{region}"
@@ -92,7 +107,12 @@ def deploy_service(
         ),
         service_account=service_account or None,
     )
-    service = run_v2.Service(template=template, labels=labels)
+    service = run_v2.Service(
+        template=template,
+        labels=labels,
+        invoker_iam_disabled=invoker_iam_disabled,
+        **({"ingress": ingress} if ingress is not None else {}),
+    )
 
     try:
         existing = client.get_service(name=_service_path(project_id, region, service_id))
