@@ -5,6 +5,13 @@ import uuid
 
 from google.cloud.sql.connector import Connector
 
+from rufo_control_plane.api_tokens import (
+    DEVICE_CODE_TTL_SECONDS,
+    generate_api_token,
+    generate_device_code,
+    generate_user_code,
+    hash_token,
+)
 from rufo_control_plane.secrets import SecretCipher
 
 SCHEMA = """
@@ -28,6 +35,24 @@ CREATE TABLE IF NOT EXISTS org_secrets (
     encrypted_value TEXT NOT NULL,
     created_at DOUBLE PRECISION NOT NULL,
     PRIMARY KEY (org_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS device_codes (
+    device_code TEXT PRIMARY KEY,
+    user_code TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'pending',
+    org_id TEXT,
+    user_id TEXT,
+    api_token TEXT,
+    created_at DOUBLE PRECISION NOT NULL,
+    expires_at DOUBLE PRECISION NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS api_tokens (
+    token_hash TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    created_at DOUBLE PRECISION NOT NULL
 );
 """
 
@@ -201,3 +226,80 @@ class PostgresControlPlaneStore:
         self._conn.commit()
         cur.close()
         return deleted
+
+    # -- device auth (`rufo login`) --------------------------------------
+
+    def create_device_code(self) -> dict:
+        now = time.time()
+        device_code = generate_device_code()
+        user_code = generate_user_code()
+        cur = self._execute(
+            "INSERT INTO device_codes (device_code, user_code, created_at, expires_at) "
+            "VALUES (%s, %s, %s, %s)",
+            (device_code, user_code, now, now + DEVICE_CODE_TTL_SECONDS),
+        )
+        self._conn.commit()
+        cur.close()
+        return {
+            "device_code": device_code,
+            "user_code": user_code,
+            "expires_in": DEVICE_CODE_TTL_SECONDS,
+        }
+
+    def poll_device_code(self, device_code: str) -> dict:
+        cur = self._execute(
+            "SELECT status, api_token, expires_at FROM device_codes WHERE device_code = %s",
+            (device_code,),
+        )
+        row = cur.fetchone()
+        cur.close()
+        if row is None:
+            return {"status": "not_found"}
+        status, api_token, expires_at = row
+        if status == "pending" and time.time() > expires_at:
+            return {"status": "expired"}
+        if status == "approved":
+            return {"status": "approved", "token": api_token}
+        return {"status": status}
+
+    def approve_device_code(self, user_code: str, org_id: str, user_id: str) -> bool:
+        """Called from the dashboard's /device page once a signed-in Clerk
+        user confirms the code the CLI printed. Issues a real API token and
+        stores only its hash -- the raw value is returned exactly once, via
+        the CLI's next poll, never persisted in plaintext."""
+        cur = self._execute(
+            "SELECT device_code, expires_at FROM device_codes WHERE user_code = %s AND status = 'pending'",
+            (user_code,),
+        )
+        row = cur.fetchone()
+        cur.close()
+        if row is None:
+            return False
+        device_code, expires_at = row
+        if time.time() > expires_at:
+            return False
+
+        token = generate_api_token()
+        now = time.time()
+        cur = self._execute(
+            "INSERT INTO api_tokens (token_hash, org_id, user_id, created_at) VALUES (%s, %s, %s, %s)",
+            (hash_token(token), org_id, user_id, now),
+        )
+        cur.close()
+        cur = self._execute(
+            "UPDATE device_codes SET status = 'approved', org_id = %s, user_id = %s, api_token = %s "
+            "WHERE device_code = %s",
+            (org_id, user_id, token, device_code),
+        )
+        self._conn.commit()
+        cur.close()
+        return True
+
+    def verify_api_token(self, token: str) -> tuple[str, str] | None:
+        """Returns (org_id, user_id) if the token is valid, else None."""
+        cur = self._execute(
+            "SELECT org_id, user_id FROM api_tokens WHERE token_hash = %s", (hash_token(token),)
+        )
+        row = cur.fetchone()
+        cur.close()
+        return (row[0], row[1]) if row else None

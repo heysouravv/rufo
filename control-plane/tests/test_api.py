@@ -69,3 +69,48 @@ def test_token_without_org_id_returns_403(client):
     token = jwt.encode(del_key, client.app.state.private_key, algorithm="RS256", headers={"kid": "k1"})
     resp = client.get("/whoami", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 403
+
+
+def test_api_token_accepted_when_store_provided(rsa_keypair):
+    """rufo_pat_ tokens (from `rufo login`) should authenticate the same
+    routes as a Clerk JWT, without ever touching Clerk's JWKS."""
+    private_key, public_key = rsa_keypair
+    verifier = ClerkVerifier.__new__(ClerkVerifier)
+    verifier.frontend_api = "example.clerk.accounts.dev"
+
+    class FakeStore:
+        def verify_api_token(self, token):
+            return ("org_from_token", "user_from_token") if token == "rufo_pat_valid" else None
+
+    app = FastAPI()
+    dep = require_auth(verifier, FakeStore())
+
+    @app.get("/whoami")
+    def whoami(auth: AuthContext = Depends(dep)) -> dict:
+        return {"user_id": auth.user_id, "org_id": auth.org_id}
+
+    client = TestClient(app)
+
+    resp = client.get("/whoami", headers={"Authorization": "Bearer rufo_pat_valid"})
+    assert resp.status_code == 200
+    assert resp.json() == {"user_id": "user_from_token", "org_id": "org_from_token"}
+
+    resp = client.get("/whoami", headers={"Authorization": "Bearer rufo_pat_invalid"})
+    assert resp.status_code == 401
+
+
+def test_api_token_rejected_without_store(rsa_keypair):
+    private_key, public_key = rsa_keypair
+    verifier = ClerkVerifier.__new__(ClerkVerifier)
+    verifier.frontend_api = "example.clerk.accounts.dev"
+
+    app = FastAPI()
+    dep = require_auth(verifier)  # no store -> API tokens not accepted
+
+    @app.get("/whoami")
+    def whoami(auth: AuthContext = Depends(dep)) -> dict:
+        return {"user_id": auth.user_id}
+
+    client = TestClient(app)
+    resp = client.get("/whoami", headers={"Authorization": "Bearer rufo_pat_anything"})
+    assert resp.status_code == 401

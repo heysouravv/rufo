@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import time
+import webbrowser
 from pathlib import Path
 
 import requests
@@ -9,13 +11,62 @@ from rich.console import Console
 from rich.table import Table
 from rufo_core.manifest import load_manifest
 
+from rufo_cli.credentials import load_token, save_token
 from rufo_cli.scaffold import scaffold
+
+RUFO_CLOUD_URL = "https://rufo.eldridgemorgan.com"
 
 app = typer.Typer(help="Rufo: deploy and operate policy-governed AI agents.")
 approvals_app = typer.Typer(help="Inspect and decide pending approval requests.")
 app.add_typer(approvals_app, name="approvals")
 
 console = Console()
+
+
+@app.command()
+def login(
+    url: str = typer.Option(RUFO_CLOUD_URL, "--url", help="Rufo Cloud control-plane URL"),
+) -> None:
+    """Authenticate the CLI with Rufo Cloud via a browser-based device flow --
+    approve the printed code at <url>/device, the same pattern as `gh auth login`.
+    """
+    resp = requests.post(f"{url}/api/auth/device/start", timeout=10)
+    resp.raise_for_status()
+    body = resp.json()
+    device_code, user_code, expires_in = body["device_code"], body["user_code"], body["expires_in"]
+
+    verification_url = f"{url}/device"
+    console.print(f"\nGo to [bold]{verification_url}[/bold] and enter code: [bold cyan]{user_code}[/bold cyan]\n")
+    try:
+        webbrowser.open(verification_url)
+    except Exception:  # noqa: BLE001 - opening a browser is best-effort
+        pass
+
+    deadline = time.time() + expires_in
+    with console.status("Waiting for approval..."):
+        while time.time() < deadline:
+            poll = requests.get(f"{url}/api/auth/device/poll", params={"device_code": device_code}, timeout=10)
+            poll.raise_for_status()
+            poll_body = poll.json()
+            if poll_body["status"] == "approved":
+                save_token(url, poll_body["token"])
+                console.print("[green]Logged in.[/green]")
+                return
+            if poll_body["status"] in ("expired", "not_found"):
+                console.print("[red]Login code expired or invalid -- run `rufo login` again.[/red]")
+                raise typer.Exit(1)
+            time.sleep(2)
+
+    console.print("[red]Timed out waiting for approval.[/red]")
+    raise typer.Exit(1)
+
+
+def _require_cloud_credentials(url_override: str | None) -> tuple[str, str]:
+    creds = load_token()
+    if creds is None:
+        console.print("[red]Not logged in.[/red] Run [bold]rufo login[/bold] first.")
+        raise typer.Exit(1)
+    return url_override or creds["url"], creds["token"]
 
 
 @app.command()

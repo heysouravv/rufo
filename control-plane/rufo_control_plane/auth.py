@@ -82,13 +82,30 @@ class ClerkVerifier:
         return AuthContext(user_id=claims["sub"], org_id=org_id, org_role=org_role)
 
 
-def require_auth(verifier: ClerkVerifier):
-    """FastAPI dependency factory: `Depends(require_auth(verifier))`."""
+def require_auth(verifier: ClerkVerifier, store=None):
+    """FastAPI dependency factory: `Depends(require_auth(verifier, store))`.
+
+    Accepts either a Clerk session JWT (browser/dashboard calls) or a
+    `rufo_pat_...` API token issued via the device auth flow (CLI calls,
+    since a CLI can't hold/refresh a short-lived Clerk session token the
+    way a browser can). `store` is only needed to verify API tokens; pass
+    None to accept Clerk JWTs exclusively.
+    """
 
     def _dep(authorization: str | None = Header(default=None)) -> AuthContext:
         if not authorization or not authorization.startswith("Bearer "):
             raise HTTPException(status_code=401, detail="missing Bearer token")
         token = authorization.removeprefix("Bearer ").strip()
+
+        if token.startswith("rufo_pat_"):
+            if store is None:
+                raise HTTPException(status_code=401, detail="API tokens are not accepted here")
+            result = store.verify_api_token(token)
+            if result is None:
+                raise HTTPException(status_code=401, detail="invalid or revoked API token")
+            org_id, user_id = result
+            return AuthContext(user_id=user_id, org_id=org_id)
+
         return verifier.verify(token)
 
     return _dep
