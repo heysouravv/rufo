@@ -67,9 +67,9 @@ Run it behind the Rufo runtime with:
     rufo deploy .
 """
 from langgraph.graph import END, START, StateGraph
-from langgraph.checkpoint.memory import MemorySaver
 from rufo_core import PolicyEngine
 from rufo_core.loader import load_policy
+from rufo_runtime.checkpointer import get_checkpointer
 from rufo_sdk.langgraph_adapter import guard_langgraph_tool
 from typing import TypedDict
 
@@ -99,7 +99,7 @@ graph.add_node("refund", refund_node)
 graph.add_edge(START, "refund")
 graph.add_edge("refund", END)
 
-agent = graph.compile(checkpointer=MemorySaver())
+agent = graph.compile(checkpointer=get_checkpointer())
 '''
 
 

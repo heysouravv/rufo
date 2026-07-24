@@ -11,10 +11,10 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import create_react_agent
 from rufo_core import PolicyEngine
 from rufo_core.loader import load_policy
+from rufo_runtime.checkpointer import get_checkpointer
 from rufo_sdk.langgraph_adapter import guard_langgraph_langchain_tool
 
 _engine = PolicyEngine(load_policy(Path(__file__).parent / "policy.yaml"))
@@ -46,4 +46,4 @@ tools = [
 
 model = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
-agent = create_react_agent(model, tools, checkpointer=MemorySaver())
+agent = create_react_agent(model, tools, checkpointer=get_checkpointer())

@@ -6,11 +6,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from rufo_control_plane.auth import ClerkVerifier, require_auth
 from rufo_control_plane.routes.costs import build_router as build_costs_router
 from rufo_control_plane.routes.deployments import build_router
+from rufo_control_plane.routes.secrets import build_router as build_secrets_router
 from rufo_control_plane.settings import load_settings
-from rufo_control_plane.store import ControlPlaneStore
+from rufo_control_plane.store import create_store
 
 settings = load_settings()
-store = ControlPlaneStore(settings.db_path)
+store = create_store(settings)
 
 app = FastAPI(title="rufo-control-plane")
 
@@ -34,6 +35,7 @@ if settings.clerk_publishable_key:
     auth_dependency = require_auth(verifier)
     app.include_router(build_router(settings, store, auth_dependency), prefix="/api")
     app.include_router(build_costs_router(settings, store, auth_dependency), prefix="/api")
+    app.include_router(build_secrets_router(store, auth_dependency), prefix="/api")
 else:
     # No Clerk key configured yet -- expose nothing rather than an unauthenticated API.
     @app.get("/api/deployments", tags=["deployments"])

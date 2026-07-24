@@ -74,3 +74,63 @@ class ControlPlaneStore:
         self._conn.execute("DELETE FROM deployments WHERE id = ? AND org_id = ?", (deployment_id, org_id))
         self._conn.commit()
         return deployment
+
+    # -- org secrets (SQLite fallback, no encryption -- local dev only;
+    #    production always uses PostgresControlPlaneStore, which encrypts) --
+
+    def set_secret(self, org_id: str, name: str, value: str) -> None:
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS org_secrets (org_id TEXT, name TEXT, encrypted_value TEXT, "
+            "created_at REAL, PRIMARY KEY (org_id, name))"
+        )
+        self._conn.execute(
+            "INSERT INTO org_secrets (org_id, name, encrypted_value, created_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(org_id, name) DO UPDATE SET encrypted_value=excluded.encrypted_value",
+            (org_id, name, value, time.time()),
+        )
+        self._conn.commit()
+
+    def get_secret(self, org_id: str, name: str) -> str | None:
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS org_secrets (org_id TEXT, name TEXT, encrypted_value TEXT, "
+            "created_at REAL, PRIMARY KEY (org_id, name))"
+        )
+        row = self._conn.execute(
+            "SELECT encrypted_value FROM org_secrets WHERE org_id = ? AND name = ?", (org_id, name)
+        ).fetchone()
+        return row["encrypted_value"] if row else None
+
+    def list_secret_names(self, org_id: str) -> list[str]:
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS org_secrets (org_id TEXT, name TEXT, encrypted_value TEXT, "
+            "created_at REAL, PRIMARY KEY (org_id, name))"
+        )
+        rows = self._conn.execute(
+            "SELECT name FROM org_secrets WHERE org_id = ? ORDER BY name", (org_id,)
+        ).fetchall()
+        return [r["name"] for r in rows]
+
+    def delete_secret(self, org_id: str, name: str) -> bool:
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS org_secrets (org_id TEXT, name TEXT, encrypted_value TEXT, "
+            "created_at REAL, PRIMARY KEY (org_id, name))"
+        )
+        cur = self._conn.execute("DELETE FROM org_secrets WHERE org_id = ? AND name = ?", (org_id, name))
+        self._conn.commit()
+        return cur.rowcount > 0
+
+
+def create_store(settings):
+    """Postgres in production (settings.db_instance_connection_name set),
+    SQLite for local dev -- same public interface either way."""
+    if settings.db_instance_connection_name:
+        from rufo_control_plane.pg_store import PostgresControlPlaneStore
+
+        return PostgresControlPlaneStore(
+            instance_connection_name=settings.db_instance_connection_name,
+            db_user=settings.db_user,
+            db_password=settings.db_password,
+            db_name=settings.db_name,
+            encryption_key=settings.encryption_key,
+        )
+    return ControlPlaneStore(settings.db_path)

@@ -18,11 +18,13 @@ class DeployRequest(BaseModel):
     image: str
     port: int = 8080
     env: dict[str, str] = {}
-    # Names only, never values: the client asks for a secret *by name* and the
-    # control plane fills in the real value from its own process environment.
-    # This is a dev-mode shortcut (one shared secret store, the operator's
-    # own env) -- real multi-tenant secret management needs a per-org secret
-    # store (e.g. Secret Manager), not a single shared server-side env.
+    # Names only, never values: the client asks for a secret *by name*.
+    # Resolved against the calling org's own secret store first (set via
+    # POST /api/secrets -- e.g. a customer's own OPENAI_API_KEY), falling
+    # back to the control plane's own process environment only if the org
+    # hasn't set one -- keeps the original demo agent working without every
+    # org needing to duplicate its key, while giving real orgs a place to
+    # bring their own.
     secret_env_from_server: list[str] = []
     min_instances: int = 0
     max_instances: int = 5
@@ -58,9 +60,12 @@ def build_router(settings: Settings, store: ControlPlaneStore, auth_dependency) 
 
         env = dict(req.env)
         for name in req.secret_env_from_server:
-            value = os.environ.get(name)
+            value = store.get_secret(auth.org_id, name) or os.environ.get(name)
             if not value:
-                raise HTTPException(status_code=400, detail=f"server has no value for secret '{name}'")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"no value for secret '{name}' -- set it with POST /api/secrets first",
+                )
             env[name] = value
 
         try:

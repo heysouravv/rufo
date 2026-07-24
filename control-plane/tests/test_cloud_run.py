@@ -115,3 +115,31 @@ def test_deploy_service_defaults_leave_agent_services_iam_gated():
         sent_service = mock_client.create_service.call_args.kwargs["service"]
         assert sent_service.invoker_iam_disabled is False
         assert sent_service.ingress == run_v2.IngressTraffic.INGRESS_TRAFFIC_UNSPECIFIED
+
+
+def test_deploy_service_sets_cloudsql_instances_annotation():
+    with patch("rufo_control_plane.gcp.cloud_run._client") as mock_client_factory:
+        from google.api_core.exceptions import NotFound
+
+        mock_client = mock_client_factory.return_value
+        mock_client.get_service.side_effect = NotFound("no such service")
+        mock_operation = MagicMock()
+        mock_operation.result.return_value = MagicMock(name="result", uri="https://example.run.app")
+        mock_client.create_service.return_value = mock_operation
+
+        deploy_service(
+            project_id="proj",
+            region="us-central1",
+            service_id="svc",
+            image="proj/repo/img@sha256:abc",
+            port=8080,
+            env={},
+            labels={},
+            cloudsql_instances=["proj:us-central1:rufo-cloud-db"],
+        )
+
+        sent_service = mock_client.create_service.call_args.kwargs["service"]
+        assert (
+            sent_service.template.annotations["run.googleapis.com/cloudsql-instances"]
+            == "proj:us-central1:rufo-cloud-db"
+        )

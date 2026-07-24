@@ -65,6 +65,7 @@ def deploy_service(
     service_account: str | None = None,
     ingress: run_v2.IngressTraffic | None = None,
     invoker_iam_disabled: bool = False,
+    cloudsql_instances: list[str] | None = None,
 ) -> CloudRunDeployResult:
     """Create or update a Cloud Run service. Idempotent: re-running with the
     same service_id updates the existing service (a new revision) instead of
@@ -90,6 +91,12 @@ def deploy_service(
     fragile since each subsequent update to unrelated fields (a redeploy, a
     service-account change) silently resets ingress back to ALL unless it's
     included in the same request -- caught live, twice, in this exact repo.
+
+    `cloudsql_instances` (e.g. ["project:region:instance"]) mounts a Unix
+    socket at /cloudsql/<instance> inside the container -- the standard way
+    for a Cloud Run workload to reach Cloud SQL with a driver that has no
+    dedicated connector support (psycopg3, needed by LangGraph's
+    PostgresSaver). No VPC or Cloud SQL Auth Proxy sidecar required.
     """
     client = _client()
     parent = f"projects/{project_id}/locations/{region}"
@@ -100,12 +107,18 @@ def deploy_service(
         ports=[run_v2.ContainerPort(container_port=port)],
         env=[run_v2.EnvVar(name=k, value=v) for k, v in env.items()],
     )
+    template_kwargs = {}
+    if cloudsql_instances:
+        template_kwargs["annotations"] = {
+            "run.googleapis.com/cloudsql-instances": ",".join(cloudsql_instances)
+        }
     template = run_v2.RevisionTemplate(
         containers=[container],
         scaling=run_v2.RevisionScaling(
             min_instance_count=min_instances, max_instance_count=max_instances
         ),
         service_account=service_account or None,
+        **template_kwargs,
     )
     service = run_v2.Service(
         template=template,

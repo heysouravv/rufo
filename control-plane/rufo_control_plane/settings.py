@@ -25,6 +25,15 @@ class Settings(BaseSettings):
 
     db_path: str = "./rufo_control_plane_data/control_plane.db"
 
+    # Postgres (Cloud SQL) -- when db_instance_connection_name is set, the
+    # control plane uses PostgresControlPlaneStore instead of the SQLite
+    # ControlPlaneStore; local dev without it keeps working exactly as before.
+    db_instance_connection_name: str = ""
+    db_user: str = "rufo"
+    db_password: str = ""
+    db_name: str = "rufo"
+    encryption_key: str = Field(default="", validation_alias=AliasChoices("RUFO_CP_ENCRYPTION_KEY", "ENCRYPTION_KEY"))
+
     cors_origins: str = "http://localhost:8901,https://rufo.eldridgemorgan.com"
 
     @property
