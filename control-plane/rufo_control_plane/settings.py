@@ -49,7 +49,7 @@ class Settings(BaseSettings):
             return None
         return (
             f"postgresql://{self.db_user}:{self.db_password}@/{self.db_name}"
-            f"?host=/cloudsql/{self.db_instance_connection_name}"
+            f"?host=/cloudsql/{self.db_instance_connection_name}&connect_timeout=10"
         )
 
 
