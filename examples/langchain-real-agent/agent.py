@@ -14,7 +14,10 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+# No fixed path: searches upward for a .env (convenient in the monorepo for
+# local dev), but doesn't error in a source-based cloud deploy where this
+# file is the only thing on disk and OPENAI_API_KEY arrives as a real env var.
+load_dotenv()
 
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import tool
