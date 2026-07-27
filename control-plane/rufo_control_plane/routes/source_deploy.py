@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import os
+import secrets
 import tarfile
 import tomllib
 import uuid
@@ -89,6 +90,11 @@ def build_router(settings: Settings, store: ControlPlaneStore, auth_dependency) 
         path_prefix = path_prefix_for(auth.org_slug or auth.org_id, manifest.name)
         env["RUFO_PUBLIC_PATH_PREFIX"] = path_prefix
 
+        service_id = _service_id_for(auth.org_id, manifest.name)
+        admin_token = secrets.token_urlsafe(32)
+        env["RUFO_ADMIN_TOKEN"] = admin_token
+        store.set_deployment_admin_token(service_id, admin_token)
+
         build_id = uuid.uuid4().hex[:12]
         try:
             dockerfile_content = synthesize_dockerfile(manifest, has_deploy_config=deploy_config_bytes is not None)
@@ -99,7 +105,6 @@ def build_router(settings: Settings, store: ControlPlaneStore, auth_dependency) 
         bucket_name = ensure_staging_bucket(settings.gcp_project_id, settings.gcp_region)
         object_path = upload_source(settings.gcp_project_id, bucket_name, _org_fingerprint(auth.org_id), build_id, packed)
 
-        service_id = _service_id_for(auth.org_id, manifest.name)
         image_tag = (
             f"{settings.gcp_region}-docker.pkg.dev/{settings.gcp_project_id}/"
             f"{settings.artifact_registry_repo}/{service_id}:{build_id}"

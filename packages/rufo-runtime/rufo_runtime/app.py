@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import hmac
 import json
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from langgraph.types import Command
 from pydantic import BaseModel
@@ -21,18 +22,6 @@ from rufo_runtime.agent_loader import load_agent
 from rufo_runtime.settings import Settings
 from rufo_runtime.store import Store
 
-# Split so a hosted deploy can expose only the customer-facing surface
-# publicly while keeping approval/audit management off that path -- those
-# routes have no auth of their own (rufo-runtime always relied on Cloud
-# Run's IAM invoker check, which invoker_iam_disabled=True removes for the
-# LB path). A real Cloud Run deploy proved this live: an anonymous caller
-# with zero credentials could read the full approval queue and self-approve
-# a pending request via the public URL, completely defeating the
-# human-in-the-loop point of `require_approval`. Until there's a real auth
-# layer for these routes, they're local-dev/direct-access only.
-public_router = APIRouter()
-management_router = APIRouter()
-
 _agent_app = FastAPI(title="rufo-runtime")
 
 _settings = Settings.from_env()
@@ -40,6 +29,32 @@ _policy_spec = load_policy(_settings.policy_path)
 _engine = PolicyEngine(_policy_spec)
 _agent = load_agent(_settings.agent_module, _settings.agent_entrypoint)
 _store = Store(_settings.db_path)
+
+
+def _require_admin_token(authorization: str | None = Header(default=None)) -> None:
+    """Approvals/audit/resume have no auth of their own by default -- a real
+    Cloud Run deploy proved an anonymous caller could read the full approval
+    queue and self-approve a pending request via the public URL, completely
+    defeating the human-in-the-loop point of `require_approval`. When the
+    control plane deploys an agent it generates a random per-deployment
+    RUFO_ADMIN_TOKEN and proxies these calls itself with it attached --
+    local dev (no token configured) stays fully open, matching today's
+    zero-friction `rufo deploy` loop.
+    """
+    if not _settings.admin_token:
+        return
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="missing Bearer token")
+    token = authorization.removeprefix("Bearer ").strip()
+    if not hmac.compare_digest(token, _settings.admin_token):
+        raise HTTPException(status_code=401, detail="invalid admin token")
+
+
+# Split so a hosted deploy can gate approval/audit management behind
+# RUFO_ADMIN_TOKEN while the customer-facing surface (invoke, chat
+# completions) stays open -- see _require_admin_token's docstring.
+public_router = APIRouter()
+management_router = APIRouter(dependencies=[Depends(_require_admin_token)])
 
 if _settings.deploy_config_path:
     _deploy_config = load_deploy_config(_settings.deploy_config_path)
@@ -361,13 +376,14 @@ _agent_app.include_router(management_router)
 # deploy without RUFO_PUBLIC_PATH_PREFIX set keep serving everything
 # (including approvals/audit) at root unchanged.
 #
-# When a public prefix IS set, only public_router gets mounted there --
-# management_router (approvals, resume, audit) has no auth of its own and
-# must not be reachable through the branded public URL. See the comment on
-# public_router/management_router above for why.
+# management_router is included here too, not left off the public path --
+# it's protected by _require_admin_token instead, so the control plane can
+# reach it at the same branded URL it already has on file for this
+# deployment (no separate internal path/backend needed).
 if _settings.public_path_prefix:
     public_app = FastAPI(title="rufo-runtime")
     public_app.include_router(public_router)
+    public_app.include_router(management_router)
     app = FastAPI(title="rufo-runtime")
     app.mount(_settings.public_path_prefix, public_app)
 else:

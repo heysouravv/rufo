@@ -24,7 +24,7 @@ def _write_fixture_agent(tmp_path):
     return agent_dir
 
 
-def _import_app(monkeypatch, tmp_path, *, public_path_prefix=None, rate_limit=None):
+def _import_app(monkeypatch, tmp_path, *, public_path_prefix=None, rate_limit=None, admin_token=None):
     """rufo_runtime.app runs its setup at *import* time, so each variant
     (prefixed vs unprefixed) needs a fresh module instance -- reload after
     setting env vars, rather than importing once and hoping."""
@@ -37,6 +37,10 @@ def _import_app(monkeypatch, tmp_path, *, public_path_prefix=None, rate_limit=No
         monkeypatch.setenv("RUFO_PUBLIC_PATH_PREFIX", public_path_prefix)
     else:
         monkeypatch.delenv("RUFO_PUBLIC_PATH_PREFIX", raising=False)
+    if admin_token:
+        monkeypatch.setenv("RUFO_ADMIN_TOKEN", admin_token)
+    else:
+        monkeypatch.delenv("RUFO_ADMIN_TOKEN", raising=False)
 
     if rate_limit is not None:
         deploy_config_path = agent_dir / "rufo.yaml"
@@ -85,15 +89,18 @@ def test_app_mounts_under_public_path_prefix(monkeypatch, tmp_path):
     assert client.get("/healthz").status_code == 404
 
 
-def test_management_routes_unreachable_under_public_prefix(monkeypatch, tmp_path):
+def test_management_routes_require_admin_token_under_public_prefix(monkeypatch, tmp_path):
     """The security-critical guarantee: approvals/audit/resume have no auth
-    of their own, so once an agent is publicly reachable they must not be
-    reachable at all under that public prefix -- a real Cloud Run deploy
-    proved an anonymous caller could otherwise read the approval queue and
-    self-approve a pending request via this exact path."""
+    of their own by default, so once an agent is publicly reachable they
+    must require RUFO_ADMIN_TOKEN -- a real Cloud Run deploy proved an
+    anonymous caller could otherwise read the approval queue and
+    self-approve a pending request via this exact path. This is exactly the
+    combination the control plane always deploys with (prefix + token)."""
     from fastapi.testclient import TestClient
 
-    app_module = _import_app(monkeypatch, tmp_path, public_path_prefix="/agents/acme/my-agent")
+    app_module = _import_app(
+        monkeypatch, tmp_path, public_path_prefix="/agents/acme/my-agent", admin_token="s3cr3t-token"
+    )
     client = TestClient(app_module.app)
 
     for path, method in [
@@ -103,16 +110,25 @@ def test_management_routes_unreachable_under_public_prefix(monkeypatch, tmp_path
         ("/agents/acme/my-agent/audit", "get"),
         ("/agents/acme/my-agent/resume", "post"),
     ]:
-        if method == "post":
-            resp = client.post(path, json={})
-        else:
-            resp = client.get(path)
-        assert resp.status_code == 404, f"{method.upper()} {path} should be unreachable, got {resp.status_code}"
+        no_auth = client.post(path, json={}) if method == "post" else client.get(path)
+        assert no_auth.status_code == 401, f"{method.upper()} {path} without a token should 401, got {no_auth.status_code}"
+
+        wrong_auth_headers = {"Authorization": "Bearer wrong-token"}
+        wrong_auth = (
+            client.post(path, json={}, headers=wrong_auth_headers)
+            if method == "post"
+            else client.get(path, headers=wrong_auth_headers)
+        )
+        assert wrong_auth.status_code == 401, f"{method.upper()} {path} with a wrong token should 401"
+
+    right_auth_headers = {"Authorization": "Bearer s3cr3t-token"}
+    assert client.get("/agents/acme/my-agent/approvals", headers=right_auth_headers).status_code == 200
+    assert client.get("/agents/acme/my-agent/audit", headers=right_auth_headers).status_code == 200
 
 
-def test_management_routes_still_work_locally_without_prefix(monkeypatch, tmp_path):
-    """Local dev (no public prefix) keeps the full surface at root --
-    the split shouldn't break the normal rufo deploy loop."""
+def test_management_routes_still_open_locally_without_prefix(monkeypatch, tmp_path):
+    """Local dev (no public prefix, no admin token) keeps the full surface
+    open at root -- the split shouldn't break the normal rufo deploy loop."""
     from fastapi.testclient import TestClient
 
     app_module = _import_app(monkeypatch, tmp_path)

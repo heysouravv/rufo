@@ -12,6 +12,7 @@ class Settings:
     db_path: str
     deploy_config_path: str | None = None
     public_path_prefix: str | None = None
+    admin_token: str | None = None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -29,4 +30,5 @@ class Settings:
             db_path=os.environ.get("RUFO_DB_PATH", "./rufo_data/rufo.db"),
             deploy_config_path=os.environ.get("RUFO_DEPLOY_CONFIG_PATH"),
             public_path_prefix=os.environ.get("RUFO_PUBLIC_PATH_PREFIX") or None,
+            admin_token=os.environ.get("RUFO_ADMIN_TOKEN") or None,
         )

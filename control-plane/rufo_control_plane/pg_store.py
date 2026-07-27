@@ -56,6 +56,22 @@ CREATE TABLE IF NOT EXISTS api_tokens (
     user_id TEXT NOT NULL,
     created_at DOUBLE PRECISION NOT NULL
 );
+
+-- Kept out of `deployments` on purpose: that row is returned verbatim from
+-- GET /deployments, and this token must never round-trip back to the org's
+-- own CLI/dashboard -- only the control plane ever attaches it to a
+-- request, proxying approvals/audit/resume to the deployed agent's
+-- otherwise-unauthenticated management routes. Keyed by service_id (not
+-- deployment_id) since the token has to be generated and injected *before*
+-- the deploy succeeds, when only service_id is known -- deployment_id
+-- doesn't exist until upsert_deployment runs afterward. service_id is
+-- stable across redeploys of the same org+agent, same as the NEG/backend
+-- service reusing it.
+CREATE TABLE IF NOT EXISTS deployment_admin_tokens (
+    service_id TEXT PRIMARY KEY,
+    encrypted_token TEXT NOT NULL,
+    created_at DOUBLE PRECISION NOT NULL
+);
 """
 
 # ALTER ... ADD COLUMN IF NOT EXISTS, run unconditionally in _ensure_schema:
@@ -198,7 +214,30 @@ class PostgresControlPlaneStore:
         cur = self._execute("DELETE FROM deployments WHERE id = %s AND org_id = %s", (deployment_id, org_id))
         self._conn.commit()
         cur.close()
+        cur = self._execute(
+            "DELETE FROM deployment_admin_tokens WHERE service_id = %s", (deployment["service_id"],)
+        )
+        self._conn.commit()
+        cur.close()
         return deployment
+
+    def set_deployment_admin_token(self, service_id: str, token: str) -> None:
+        encrypted = self._cipher.encrypt(token)
+        cur = self._execute(
+            "INSERT INTO deployment_admin_tokens (service_id, encrypted_token, created_at) VALUES (%s, %s, %s) "
+            "ON CONFLICT (service_id) DO UPDATE SET encrypted_token = EXCLUDED.encrypted_token",
+            (service_id, encrypted, time.time()),
+        )
+        self._conn.commit()
+        cur.close()
+
+    def get_deployment_admin_token(self, service_id: str) -> str | None:
+        cur = self._execute(
+            "SELECT encrypted_token FROM deployment_admin_tokens WHERE service_id = %s", (service_id,)
+        )
+        row = cur.fetchone()
+        cur.close()
+        return self._cipher.decrypt(row[0]) if row else None
 
     # -- org secrets -----------------------------------------------------
 

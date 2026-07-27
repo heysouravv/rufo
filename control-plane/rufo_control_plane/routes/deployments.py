@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import secrets
 
-from fastapi import APIRouter, Depends, HTTPException
+import httpx
+from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel
 
 from google.cloud import run_v2
@@ -89,6 +91,31 @@ def publish_agent_endpoint(settings: Settings, service_id: str, region: str, pat
     return f"https://{settings.public_domain}{path_prefix}"
 
 
+def _deployment_and_admin_token(store: ControlPlaneStore, org_id: str, deployment_id: str) -> tuple[dict, str]:
+    deployment = store.get_deployment(org_id, deployment_id)
+    if deployment is None:
+        raise HTTPException(status_code=404, detail="deployment not found")
+    token = store.get_deployment_admin_token(deployment["service_id"])
+    if token is None:
+        raise HTTPException(
+            status_code=502, detail="no admin token on file for this deployment -- redeploy to generate one"
+        )
+    return deployment, token
+
+
+def _forward(resp: httpx.Response):
+    """Proxies the deployed agent's own status code/body back to the caller
+    rather than always 200 -- e.g. a 404 for an unknown approval_id should
+    reach the dashboard as a 404, not get swallowed into a generic success."""
+    try:
+        body = resp.json()
+    except ValueError:
+        body = {"detail": resp.text}
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=resp.status_code, detail=body.get("detail", body) if isinstance(body, dict) else body)
+    return body
+
+
 def build_router(settings: Settings, store: ControlPlaneStore, auth_dependency) -> APIRouter:
     router = APIRouter(prefix="/deployments", tags=["deployments"])
 
@@ -111,6 +138,15 @@ def build_router(settings: Settings, store: ControlPlaneStore, auth_dependency) 
 
         path_prefix = path_prefix_for(auth.org_slug or auth.org_id, req.agent_name)
         env["RUFO_PUBLIC_PATH_PREFIX"] = path_prefix
+
+        # Generated fresh on every deploy (not just once) -- cheap, and
+        # rotates the token automatically on redeploy rather than a stale
+        # one persisting indefinitely. Keyed by service_id, not
+        # deployment_id, since the deployment row doesn't exist until
+        # upsert_deployment runs below.
+        admin_token = secrets.token_urlsafe(32)
+        env["RUFO_ADMIN_TOKEN"] = admin_token
+        store.set_deployment_admin_token(service_id, admin_token)
 
         try:
             deploy_service(
@@ -177,5 +213,94 @@ def build_router(settings: Settings, store: ControlPlaneStore, auth_dependency) 
         )
         store.delete_deployment(auth.org_id, deployment_id)
         return {"status": "deleted", "id": deployment_id}
+
+    # -- approval/audit management, proxied to the deployed agent's own
+    #    otherwise-unauthenticated routes using the admin token generated at
+    #    deploy time. This is how an org's Clerk/PAT-authenticated caller
+    #    manages approvals for a hosted agent -- they never see the raw
+    #    admin token themselves. --------------------------------------------
+
+    @router.get("/{deployment_id}/approvals")
+    def list_agent_approvals(
+        deployment_id: str, status: str | None = None, auth: AuthContext = Depends(auth_dependency)
+    ) -> list[dict]:
+        deployment, token = _deployment_and_admin_token(store, auth.org_id, deployment_id)
+        try:
+            resp = httpx.get(
+                f"{deployment['uri']}/approvals",
+                params={"status": status} if status else {},
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=30,
+            )
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"could not reach deployed agent: {exc}") from exc
+        return _forward(resp)
+
+    @router.get("/{deployment_id}/approvals/{approval_id}")
+    def get_agent_approval(
+        deployment_id: str, approval_id: str, auth: AuthContext = Depends(auth_dependency)
+    ) -> dict:
+        deployment, token = _deployment_and_admin_token(store, auth.org_id, deployment_id)
+        try:
+            resp = httpx.get(
+                f"{deployment['uri']}/approvals/{approval_id}",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=30,
+            )
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"could not reach deployed agent: {exc}") from exc
+        return _forward(resp)
+
+    @router.post("/{deployment_id}/approvals/{approval_id}/decide")
+    def decide_agent_approval(
+        deployment_id: str,
+        approval_id: str,
+        body: dict = Body(...),
+        auth: AuthContext = Depends(auth_dependency),
+    ) -> dict:
+        deployment, token = _deployment_and_admin_token(store, auth.org_id, deployment_id)
+        try:
+            resp = httpx.post(
+                f"{deployment['uri']}/approvals/{approval_id}/decide",
+                json=body,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=30,
+            )
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"could not reach deployed agent: {exc}") from exc
+        return _forward(resp)
+
+    @router.post("/{deployment_id}/resume")
+    def resume_agent(deployment_id: str, body: dict = Body(...), auth: AuthContext = Depends(auth_dependency)) -> dict:
+        deployment, token = _deployment_and_admin_token(store, auth.org_id, deployment_id)
+        try:
+            resp = httpx.post(
+                f"{deployment['uri']}/resume",
+                json=body,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=60,
+            )
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"could not reach deployed agent: {exc}") from exc
+        return _forward(resp)
+
+    @router.get("/{deployment_id}/audit")
+    def list_agent_audit(
+        deployment_id: str, run_id: str | None = None, limit: int = 200, auth: AuthContext = Depends(auth_dependency)
+    ) -> list[dict]:
+        deployment, token = _deployment_and_admin_token(store, auth.org_id, deployment_id)
+        params = {"limit": limit}
+        if run_id:
+            params["run_id"] = run_id
+        try:
+            resp = httpx.get(
+                f"{deployment['uri']}/audit",
+                params=params,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=30,
+            )
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"could not reach deployed agent: {exc}") from exc
+        return _forward(resp)
 
     return router

@@ -28,6 +28,22 @@ CREATE TABLE IF NOT EXISTS deployments (
     updated_at REAL NOT NULL,
     UNIQUE(org_id, agent_name)
 );
+
+-- Kept out of the `deployments` table on purpose: that row is returned
+-- verbatim from GET /deployments, and this token must never round-trip
+-- back to the org's own CLI/dashboard -- the control plane is the only
+-- thing that ever attaches it to a request, proxying approvals/audit/
+-- resume calls to the deployed agent's otherwise-unauthenticated
+-- management routes. Keyed by service_id (not deployment_id) since the
+-- token has to be generated and injected *before* the deploy succeeds,
+-- when only service_id is known -- deployment_id doesn't exist until
+-- upsert_deployment runs afterward. service_id is stable across redeploys
+-- of the same org+agent, same as the NEG/backend service reusing it.
+CREATE TABLE IF NOT EXISTS deployment_admin_tokens (
+    service_id TEXT PRIMARY KEY,
+    token TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
 """
 
 
@@ -80,8 +96,25 @@ class ControlPlaneStore:
         if deployment is None:
             return None
         self._conn.execute("DELETE FROM deployments WHERE id = ? AND org_id = ?", (deployment_id, org_id))
+        self._conn.execute(
+            "DELETE FROM deployment_admin_tokens WHERE service_id = ?", (deployment["service_id"],)
+        )
         self._conn.commit()
         return deployment
+
+    def set_deployment_admin_token(self, service_id: str, token: str) -> None:
+        self._conn.execute(
+            "INSERT INTO deployment_admin_tokens (service_id, token, created_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(service_id) DO UPDATE SET token=excluded.token",
+            (service_id, token, time.time()),
+        )
+        self._conn.commit()
+
+    def get_deployment_admin_token(self, service_id: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT token FROM deployment_admin_tokens WHERE service_id = ?", (service_id,)
+        ).fetchone()
+        return row["token"] if row else None
 
     # -- org secrets (SQLite fallback, no encryption -- local dev only;
     #    production always uses PostgresControlPlaneStore, which encrypts) --

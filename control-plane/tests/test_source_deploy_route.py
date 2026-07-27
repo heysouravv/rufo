@@ -89,6 +89,8 @@ def test_deploy_from_source_succeeds(mock_bucket, mock_upload, mock_build, mock_
     deploy_kwargs = mock_deploy.call_args.kwargs
     assert deploy_kwargs["env"]["OPENAI_API_KEY"] == "sk-real"
     assert deploy_kwargs["env"]["RUFO_PUBLIC_PATH_PREFIX"] == "/agents/org-1/demo-agent"
+    assert len(deploy_kwargs["env"]["RUFO_ADMIN_TOKEN"]) > 20
+    assert store.get_deployment_admin_token(body["service_id"]) == deploy_kwargs["env"]["RUFO_ADMIN_TOKEN"]
     assert store.list_deployments("org_1")
 
 
