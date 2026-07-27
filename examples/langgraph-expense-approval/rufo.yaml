@@ -1,0 +1,11 @@
+port: 8080
+scaling:
+  min_instances: 0
+  max_instances: 5
+
+endpoint:
+  enabled: false
+
+mcp: []
+
+env: []

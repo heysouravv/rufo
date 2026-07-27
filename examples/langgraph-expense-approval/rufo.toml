@@ -1,0 +1,10 @@
+[agent]
+name = "langgraph-expense-approval"
+entrypoint = "agent.py:agent"
+runtime = "python@3.11"
+
+[dependencies]
+langgraph = "^0.2"
+
+[policy]
+file = "policy.yaml"
