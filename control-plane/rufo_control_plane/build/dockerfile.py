@@ -48,6 +48,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /
 RUN pip install --no-cache-dir \\
     {pip_install_lines}
 COPY . .
+ENV PYTHONUNBUFFERED=1
 ENV RUFO_POLICY_PATH={policy_file}
 ENV RUFO_AGENT_MODULE={entrypoint_module}
 ENV RUFO_AGENT_ENTRYPOINT={manifest.entrypoint_attr}

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import os
+import sys
 
 from langgraph.checkpoint.memory import MemorySaver
+
+
+def _log(msg: str) -> None:
+    print(f"[rufo-checkpointer] {msg}", file=sys.stderr, flush=True)
 
 
 def get_checkpointer():
@@ -20,7 +25,10 @@ def get_checkpointer():
     if not database_url:
         return MemorySaver()
 
+    _log("importing PostgresSaver")
     from langgraph.checkpoint.postgres import PostgresSaver
+
+    _log("import done, connecting")
 
     # from_conn_string is a @contextmanager generator, not a plain
     # constructor -- entered manually and kept open for the process's
@@ -37,6 +45,8 @@ def get_checkpointer():
     # local test, since GC timing under a quick script never triggered it.
     cm = PostgresSaver.from_conn_string(database_url)
     saver = cm.__enter__()
+    _log("connected, running setup()")
     saver.setup()
+    _log("setup() done")
     saver._rufo_keep_alive_cm = cm
     return saver
