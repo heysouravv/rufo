@@ -26,6 +26,17 @@ def get_checkpointer():
     # constructor -- entered manually and kept open for the process's
     # lifetime (this is called once at agent-module load time and the
     # runtime process lives as long as the Cloud Run instance does).
-    saver = PostgresSaver.from_conn_string(database_url).__enter__()
+    #
+    # The context manager object itself (not just the yielded PostgresSaver)
+    # must be kept alive: it owns the generator whose `with Connection.connect(...)`
+    # block closes the connection on __exit__. Discarding it left the
+    # generator with no references, so the garbage collector finalized it --
+    # calling __exit__ and closing the connection out from under the saver,
+    # sometimes before its first query. Caught by a real Cloud Run deploy
+    # (`psycopg.OperationalError: the connection is closed`), not by any
+    # local test, since GC timing under a quick script never triggered it.
+    cm = PostgresSaver.from_conn_string(database_url)
+    saver = cm.__enter__()
     saver.setup()
+    saver._rufo_keep_alive_cm = cm
     return saver
