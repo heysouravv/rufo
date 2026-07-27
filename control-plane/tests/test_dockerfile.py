@@ -52,3 +52,11 @@ def test_dockerfile_copies_source_and_exposes_port():
     assert "COPY . ." in dockerfile
     assert "EXPOSE 8080" in dockerfile
     assert "uvicorn rufo_runtime.app:app" in dockerfile
+
+
+def test_dockerfile_installs_git_before_pip_install():
+    # python:3.11-slim has no git binary -- pip can't resolve git+https
+    # dependencies without it, a real failure caught by a live Cloud Build run.
+    dockerfile = synthesize_dockerfile(_manifest(), has_deploy_config=False)
+    assert "apt-get install -y --no-install-recommends git" in dockerfile
+    assert dockerfile.index("apt-get install") < dockerfile.index("pip install")
