@@ -6,12 +6,14 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from langgraph.types import Command
 from pydantic import BaseModel
 from rufo_core.deploy_config import DeployConfig, EndpointConfig, load_deploy_config
+from rufo_core.limiter import RateLimiter
 from rufo_core.loader import load_policy
+from rufo_core.models import Limit
 from rufo_core import PolicyEngine
 from rufo_sdk.errors import ApprovalRejected, ToolCallDenied
 
@@ -45,6 +47,28 @@ else:
     _deploy_config = DeployConfig(
         endpoint=EndpointConfig(model_name=Path(_settings.agent_module).stem)
     )
+
+# HTTP-layer cap on /invoke and /v1/chat/completions -- see RateLimitConfig's
+# docstring for why this exists independent of policy.yaml's own tool-level
+# limits. In-memory/per-instance, same documented limitation as RateLimiter's
+# use inside the policy engine itself.
+_http_rate_limiter = RateLimiter()
+_http_rate_limit = Limit(
+    scope="http", max_calls=_deploy_config.rate_limit.max_calls, per_seconds=_deploy_config.rate_limit.per_seconds
+)
+
+
+def _enforce_rate_limit() -> None:
+    if _deploy_config.rate_limit.max_calls <= 0:
+        return
+    if _http_rate_limiter.hit("http", _http_rate_limit):
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"rate limit exceeded: {_http_rate_limit.max_calls} calls / "
+                f"{_http_rate_limit.per_seconds}s -- configure a higher rate_limit in rufo.yaml if needed"
+            ),
+        )
 
 
 class InvokeRequest(BaseModel):
@@ -117,7 +141,7 @@ def _safe_jsonable(value: Any) -> Any:
         return str(value)
 
 
-@public_router.post("/invoke")
+@public_router.post("/invoke", dependencies=[Depends(_enforce_rate_limit)])
 def invoke(req: InvokeRequest) -> dict:
     thread_id = req.thread_id or str(uuid.uuid4())
     _store.log_event(thread_id, "run_started", None, {"input": _safe_jsonable(req.input)})
@@ -271,7 +295,7 @@ def list_models() -> dict:
     }
 
 
-@public_router.post("/v1/chat/completions")
+@public_router.post("/v1/chat/completions", dependencies=[Depends(_enforce_rate_limit)])
 def chat_completions(req: ChatCompletionRequest):
     if not _deploy_config.endpoint.enabled:
         return _openai_error(404, "endpoint mode is disabled for this agent", "not_found")

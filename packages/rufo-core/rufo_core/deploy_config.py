@@ -30,6 +30,22 @@ class EndpointConfig:
 
 
 @dataclass(frozen=True)
+class RateLimitConfig:
+    """HTTP-layer cap on the two costly public endpoints (/invoke,
+    /v1/chat/completions) -- independent of policy.yaml's own tool-level
+    limits, which only fire on a guarded tool *call* and never cap a plain
+    LLM chat with no tool use. Once an agent is publicly reachable (no GCP
+    auth needed), that gap is a real, uncapped cost-DoS vector against
+    whichever OPENAI_API_KEY the org configured -- caught in a pre-UAT
+    security audit. On by default for every deploy; set max_calls: 0 to
+    disable (not recommended for a publicly reachable agent).
+    """
+
+    max_calls: int = 60
+    per_seconds: int = 60
+
+
+@dataclass(frozen=True)
 class McpConnection:
     name: str
     url: str
@@ -43,6 +59,7 @@ class DeployConfig:
     port: int = 8080
     scaling: ScalingConfig = field(default_factory=ScalingConfig)
     endpoint: EndpointConfig = field(default_factory=EndpointConfig)
+    rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)
     mcp: list[McpConnection] = field(default_factory=list)
     env: list[str] = field(default_factory=list)
 
@@ -61,6 +78,7 @@ def load_deploy_config(path: str | Path) -> DeployConfig:
 def parse_deploy_config(doc: dict) -> DeployConfig:
     scaling_raw = doc.get("scaling", {}) or {}
     endpoint_raw = doc.get("endpoint", {}) or {}
+    rate_limit_raw = doc.get("rate_limit", {}) or {}
     mcp_raw = doc.get("mcp", []) or []
 
     for i, m in enumerate(mcp_raw):
@@ -77,6 +95,10 @@ def parse_deploy_config(doc: dict) -> DeployConfig:
             enabled=bool(endpoint_raw.get("enabled", True)),
             model_name=endpoint_raw.get("model_name", "agent"),
             stream=bool(endpoint_raw.get("stream", True)),
+        ),
+        rate_limit=RateLimitConfig(
+            max_calls=int(rate_limit_raw.get("max_calls", 60)),
+            per_seconds=int(rate_limit_raw.get("per_seconds", 60)),
         ),
         mcp=[
             McpConnection(
