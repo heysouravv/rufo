@@ -23,7 +23,10 @@ def _make_client(tmp_path, monkeypatch):
 
 def test_secret_env_from_server_injects_real_value(tmp_path, monkeypatch):
     client = _make_client(tmp_path, monkeypatch)
-    with patch("rufo_control_plane.routes.deployments.deploy_service") as mock_deploy:
+    with (
+        patch("rufo_control_plane.routes.deployments.deploy_service") as mock_deploy,
+        patch("rufo_control_plane.routes.deployments.publish_agent_endpoint", return_value="https://rufo.example.com/agents/org-1/test-agent"),
+    ):
         mock_deploy.return_value = MagicMock(uri="https://example.run.app")
         resp = client.post(
             "/deployments",

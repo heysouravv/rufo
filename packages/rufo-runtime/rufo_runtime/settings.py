@@ -11,6 +11,7 @@ class Settings:
     agent_entrypoint: str
     db_path: str
     deploy_config_path: str | None = None
+    public_path_prefix: str | None = None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -27,4 +28,5 @@ class Settings:
             agent_entrypoint=os.environ.get("RUFO_AGENT_ENTRYPOINT", "agent"),
             db_path=os.environ.get("RUFO_DB_PATH", "./rufo_data/rufo.db"),
             deploy_config_path=os.environ.get("RUFO_DEPLOY_CONFIG_PATH"),
+            public_path_prefix=os.environ.get("RUFO_PUBLIC_PATH_PREFIX") or None,
         )

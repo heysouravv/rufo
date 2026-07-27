@@ -92,6 +92,64 @@ def test_verify_accepts_valid_token_with_org_v2_nested_shape(rsa_keypair):
     assert ctx.user_id == "user_3GwBWnEP0OxUuhjTgMEObvbYdXT"
     assert ctx.org_id == "org_3GwBXSYdKAdFiDSQiJPijF84WrB"
     assert ctx.org_role == "admin"
+    assert ctx.org_slug == "eldridge-morgan"
+
+
+def test_verify_extracts_legacy_flat_org_slug(rsa_keypair):
+    private_key, public_key = rsa_keypair
+    verifier = ClerkVerifier.__new__(ClerkVerifier)
+    verifier.frontend_api = "example.clerk.accounts.dev"
+
+    class FakeSigningKey:
+        key = public_key
+
+    class FakeJwkClient:
+        def get_signing_key_from_jwt(self, token):
+            return FakeSigningKey()
+
+    verifier._jwk_client = FakeJwkClient()
+
+    token = _make_token(
+        private_key,
+        kid="test-key",
+        claims={
+            "sub": "user_123",
+            "org_id": "org_456",
+            "org_role": "admin",
+            "org_slug": "acme-inc",
+            "iat": int(time.time()),
+            "exp": int(time.time()) + 300,
+        },
+    )
+
+    ctx = verifier.verify(token)
+    assert ctx.org_slug == "acme-inc"
+
+
+def test_verify_org_slug_is_none_when_absent(rsa_keypair):
+    """No slug claim at all -- callers building a branded URL fall back to
+    org_id themselves; verify() shouldn't error or invent one."""
+    private_key, public_key = rsa_keypair
+    verifier = ClerkVerifier.__new__(ClerkVerifier)
+    verifier.frontend_api = "example.clerk.accounts.dev"
+
+    class FakeSigningKey:
+        key = public_key
+
+    class FakeJwkClient:
+        def get_signing_key_from_jwt(self, token):
+            return FakeSigningKey()
+
+    verifier._jwk_client = FakeJwkClient()
+
+    token = _make_token(
+        private_key,
+        kid="test-key",
+        claims={"sub": "user_123", "org_id": "org_456", "iat": int(time.time()), "exp": int(time.time()) + 300},
+    )
+
+    ctx = verifier.verify(token)
+    assert ctx.org_slug is None
 
 
 def test_verify_rejects_token_without_org(rsa_keypair):

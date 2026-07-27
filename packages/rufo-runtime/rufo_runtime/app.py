@@ -19,7 +19,7 @@ from rufo_runtime.agent_loader import load_agent
 from rufo_runtime.settings import Settings
 from rufo_runtime.store import Store
 
-app = FastAPI(title="rufo-runtime")
+_agent_app = FastAPI(title="rufo-runtime")
 
 _settings = Settings.from_env()
 _policy_spec = load_policy(_settings.policy_path)
@@ -105,7 +105,7 @@ def _safe_jsonable(value: Any) -> Any:
         return str(value)
 
 
-@app.post("/invoke")
+@_agent_app.post("/invoke")
 def invoke(req: InvokeRequest) -> dict:
     thread_id = req.thread_id or str(uuid.uuid4())
     _store.log_event(thread_id, "run_started", None, {"input": _safe_jsonable(req.input)})
@@ -117,7 +117,7 @@ def invoke(req: InvokeRequest) -> dict:
     return _handle_agent_result(thread_id, result)
 
 
-@app.post("/resume")
+@_agent_app.post("/resume")
 def resume(req: ResumeRequest) -> dict:
     approval = _store.decide_approval(req.approval_id, req.approved, req.reason)
     if approval is None:
@@ -132,18 +132,18 @@ def resume(req: ResumeRequest) -> dict:
     return _handle_agent_result(req.thread_id, result)
 
 
-@app.post("/approvals")
+@_agent_app.post("/approvals")
 def create_approval(req: CreateApprovalRequest) -> dict:
     approval_id = _store.create_approval(req.run_id, req.tool_name, req.args, req.reason)
     return {"id": approval_id}
 
 
-@app.get("/approvals")
+@_agent_app.get("/approvals")
 def list_approvals(status: str | None = None) -> list[dict]:
     return _store.list_approvals(status)
 
 
-@app.get("/approvals/{approval_id}")
+@_agent_app.get("/approvals/{approval_id}")
 def get_approval(approval_id: str) -> dict:
     approval = _store.get_approval(approval_id)
     if approval is None:
@@ -151,7 +151,7 @@ def get_approval(approval_id: str) -> dict:
     return approval
 
 
-@app.post("/approvals/{approval_id}/decide")
+@_agent_app.post("/approvals/{approval_id}/decide")
 def decide_approval(approval_id: str, req: DecideRequest) -> dict:
     approval = _store.decide_approval(approval_id, req.approved, req.reason)
     if approval is None:
@@ -159,12 +159,12 @@ def decide_approval(approval_id: str, req: DecideRequest) -> dict:
     return approval
 
 
-@app.get("/audit")
+@_agent_app.get("/audit")
 def list_audit(run_id: str | None = None, limit: int = 200) -> list[dict]:
     return _store.list_audit(run_id, limit)
 
 
-@app.get("/healthz")
+@_agent_app.get("/healthz")
 def healthz() -> dict:
     return {"status": "ok"}
 
@@ -244,7 +244,7 @@ def _stream_chat_completion(chunk_id: str, content: str, model: str):
     yield "data: [DONE]\n\n"
 
 
-@app.get("/v1/models")
+@_agent_app.get("/v1/models")
 def list_models() -> dict:
     return {
         "object": "list",
@@ -259,7 +259,7 @@ def list_models() -> dict:
     }
 
 
-@app.post("/v1/chat/completions")
+@_agent_app.post("/v1/chat/completions")
 def chat_completions(req: ChatCompletionRequest):
     if not _deploy_config.endpoint.enabled:
         return _openai_error(404, "endpoint mode is disabled for this agent", "not_found")
@@ -313,3 +313,15 @@ def chat_completions(req: ChatCompletionRequest):
         "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
         "usage": _extract_usage(final_message),
     }
+
+
+# Deployed agents behind the shared Load Balancer (rufo.eldridgemorgan.com/agents/<org>/<agent>)
+# need every route reachable at that prefix -- the LB forwards the full,
+# unmodified path rather than rewriting it, so the app has to strip the
+# prefix itself via a standard Starlette sub-app mount. Local dev and any
+# deploy without RUFO_PUBLIC_PATH_PREFIX set keep serving at root unchanged.
+if _settings.public_path_prefix:
+    app = FastAPI(title="rufo-runtime")
+    app.mount(_settings.public_path_prefix, _agent_app)
+else:
+    app = _agent_app

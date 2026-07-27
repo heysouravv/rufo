@@ -55,16 +55,18 @@ def _make_client(tmp_path):
     return TestClient(app), store
 
 
+@patch("rufo_control_plane.routes.source_deploy.publish_agent_endpoint")
 @patch("rufo_control_plane.routes.source_deploy.deploy_service")
 @patch("rufo_control_plane.routes.source_deploy.submit_build_and_wait")
 @patch("rufo_control_plane.routes.source_deploy.upload_source", return_value="org/build123.tar.gz")
 @patch("rufo_control_plane.routes.source_deploy.ensure_staging_bucket", return_value="test-project-rufo-agent-sources")
-def test_deploy_from_source_succeeds(mock_bucket, mock_upload, mock_build, mock_deploy, tmp_path):
+def test_deploy_from_source_succeeds(mock_bucket, mock_upload, mock_build, mock_deploy, mock_publish, tmp_path):
     client, store = _make_client(tmp_path)
     store.set_secret("org_1", "OPENAI_API_KEY", "sk-real")
     mock_deploy.return_value = CloudRunDeployResult(
         service_name="projects/test-project/locations/us-central1/services/rufo-x", uri="https://rufo-x.run.app"
     )
+    mock_publish.return_value = "https://rufo.example.com/agents/org-1/demo-agent"
 
     tar_bytes = _make_tar({"rufo.toml": _RUFO_TOML, "rufo.yaml": _RUFO_YAML, "agent.py": b"agent = None\n"})
     resp = client.post("/deployments/from-source", files={"source": ("agent.tar.gz", tar_bytes, "application/gzip")})
@@ -72,11 +74,12 @@ def test_deploy_from_source_succeeds(mock_bucket, mock_upload, mock_build, mock_
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["agent_name"] == "demo-agent"
-    assert body["uri"] == "https://rufo-x.run.app"
+    assert body["uri"] == "https://rufo.example.com/agents/org-1/demo-agent"
 
     mock_build.assert_called_once()
     deploy_kwargs = mock_deploy.call_args.kwargs
     assert deploy_kwargs["env"]["OPENAI_API_KEY"] == "sk-real"
+    assert deploy_kwargs["env"]["RUFO_PUBLIC_PATH_PREFIX"] == "/agents/org-1/demo-agent"
     assert store.list_deployments("org_1")
 
 

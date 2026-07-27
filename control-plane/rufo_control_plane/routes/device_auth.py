@@ -30,7 +30,7 @@ def build_router(store, clerk_auth_dependency) -> APIRouter:
     def approve_device_auth(
         req: ApproveDeviceRequest, auth: AuthContext = Depends(clerk_auth_dependency)
     ) -> dict:
-        approved = store.approve_device_code(req.user_code, auth.org_id, auth.user_id)
+        approved = store.approve_device_code(req.user_code, auth.org_id, auth.org_slug, auth.user_id)
         if not approved:
             raise HTTPException(status_code=404, detail="code not found, already used, or expired")
         return {"status": "approved"}

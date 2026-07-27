@@ -15,6 +15,11 @@ class AuthContext:
     user_id: str
     org_id: str
     org_role: str | None = None
+    # Human-readable org slug (Clerk's "o.slg"/"org_slug" claim) used to build
+    # branded per-agent URLs (/agents/<org_slug>/<agent>). Falls back to
+    # org_id at the call site when unavailable -- still functional, just
+    # less pretty.
+    org_slug: str | None = None
 
 
 def frontend_api_from_publishable_key(publishable_key: str) -> str:
@@ -27,24 +32,25 @@ def frontend_api_from_publishable_key(publishable_key: str) -> str:
     return decoded.rstrip("$")
 
 
-def _extract_org(claims: dict) -> tuple[str | None, str | None]:
+def _extract_org(claims: dict) -> tuple[str | None, str | None, str | None]:
     """Clerk has two session-token claim shapes for organization data:
 
-    - v1/legacy: flat `org_id` / `org_role` claims (what the original dev/test
-      Clerk instance used during development).
-    - v2 (`"v": 2` in the token): compact nested `"o": {"id": ..., "rol": ...}`
-      (what a freshly-created production instance issues by default) --
-      caught live when a real production sign-in kept 403ing with "no active
-      organization" despite the org existing and being active; decoding the
-      actual token showed the org was there all along, just nested.
+    - v1/legacy: flat `org_id` / `org_role` / `org_slug` claims (what the
+      original dev/test Clerk instance used during development).
+    - v2 (`"v": 2` in the token): compact nested
+      `"o": {"id": ..., "rol": ..., "slg": ...}` (what a freshly-created
+      production instance issues by default) -- caught live when a real
+      production sign-in kept 403ing with "no active organization" despite
+      the org existing and being active; decoding the actual token showed
+      the org was there all along, just nested.
 
     Check v2 first since it's what new instances default to; fall back to
     the legacy flat claims for instances still issuing v1 tokens.
     """
     org = claims.get("o")
     if isinstance(org, dict) and org.get("id"):
-        return org["id"], org.get("rol")
-    return claims.get("org_id"), claims.get("org_role")
+        return org["id"], org.get("rol"), org.get("slg")
+    return claims.get("org_id"), claims.get("org_role"), claims.get("org_slug")
 
 
 class ClerkVerifier:
@@ -72,14 +78,14 @@ class ClerkVerifier:
         except jwt.PyJWTError as exc:
             raise HTTPException(status_code=401, detail=f"invalid session token: {exc}") from exc
 
-        org_id, org_role = _extract_org(claims)
+        org_id, org_role, org_slug = _extract_org(claims)
         if not org_id:
             raise HTTPException(
                 status_code=403,
                 detail="session token has no active organization -- select/create an org in Clerk first",
             )
 
-        return AuthContext(user_id=claims["sub"], org_id=org_id, org_role=org_role)
+        return AuthContext(user_id=claims["sub"], org_id=org_id, org_role=org_role, org_slug=org_slug)
 
 
 def require_auth(verifier: ClerkVerifier, store=None):
@@ -103,8 +109,8 @@ def require_auth(verifier: ClerkVerifier, store=None):
             result = store.verify_api_token(token)
             if result is None:
                 raise HTTPException(status_code=401, detail="invalid or revoked API token")
-            org_id, user_id = result
-            return AuthContext(user_id=user_id, org_id=org_id)
+            org_id, org_slug, user_id = result
+            return AuthContext(user_id=user_id, org_id=org_id, org_slug=org_slug)
 
         return verifier.verify(token)
 

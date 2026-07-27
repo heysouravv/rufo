@@ -10,6 +10,7 @@ dependencies = [
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
     "google-cloud-run>=0.10",
+    "google-cloud-compute>=1.19",
     "google-cloud-artifact-registry>=1.14",
     "google-cloud-build>=3.24",
     "google-cloud-monitoring>=2.22",

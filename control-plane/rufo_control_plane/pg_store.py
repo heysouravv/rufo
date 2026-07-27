@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS device_codes (
     user_code TEXT NOT NULL UNIQUE,
     status TEXT NOT NULL DEFAULT 'pending',
     org_id TEXT,
+    org_slug TEXT,
     user_id TEXT,
     api_token TEXT,
     created_at DOUBLE PRECISION NOT NULL,
@@ -51,10 +52,19 @@ CREATE TABLE IF NOT EXISTS device_codes (
 CREATE TABLE IF NOT EXISTS api_tokens (
     token_hash TEXT PRIMARY KEY,
     org_id TEXT NOT NULL,
+    org_slug TEXT,
     user_id TEXT NOT NULL,
     created_at DOUBLE PRECISION NOT NULL
 );
 """
+
+# ALTER ... ADD COLUMN IF NOT EXISTS, run unconditionally in _ensure_schema:
+# CREATE TABLE IF NOT EXISTS above only helps a brand-new database -- the
+# already-running production table predates org_slug and needs migrating.
+_MIGRATIONS = [
+    "ALTER TABLE device_codes ADD COLUMN IF NOT EXISTS org_slug TEXT",
+    "ALTER TABLE api_tokens ADD COLUMN IF NOT EXISTS org_slug TEXT",
+]
 
 _DEPLOYMENT_COLUMNS = [
     "id",
@@ -114,6 +124,8 @@ class PostgresControlPlaneStore:
     def _ensure_schema(self) -> None:
         cur = self._conn.cursor()
         cur.execute(SCHEMA)
+        for migration in _MIGRATIONS:
+            cur.execute(migration)
         self._conn.commit()
         cur.close()
 
@@ -262,7 +274,7 @@ class PostgresControlPlaneStore:
             return {"status": "approved", "token": api_token}
         return {"status": status}
 
-    def approve_device_code(self, user_code: str, org_id: str, user_id: str) -> bool:
+    def approve_device_code(self, user_code: str, org_id: str, org_slug: str | None, user_id: str) -> bool:
         """Called from the dashboard's /device page once a signed-in Clerk
         user confirms the code the CLI printed. Issues a real API token and
         stores only its hash -- the raw value is returned exactly once, via
@@ -282,24 +294,24 @@ class PostgresControlPlaneStore:
         token = generate_api_token()
         now = time.time()
         cur = self._execute(
-            "INSERT INTO api_tokens (token_hash, org_id, user_id, created_at) VALUES (%s, %s, %s, %s)",
-            (hash_token(token), org_id, user_id, now),
+            "INSERT INTO api_tokens (token_hash, org_id, org_slug, user_id, created_at) VALUES (%s, %s, %s, %s, %s)",
+            (hash_token(token), org_id, org_slug, user_id, now),
         )
         cur.close()
         cur = self._execute(
-            "UPDATE device_codes SET status = 'approved', org_id = %s, user_id = %s, api_token = %s "
+            "UPDATE device_codes SET status = 'approved', org_id = %s, org_slug = %s, user_id = %s, api_token = %s "
             "WHERE device_code = %s",
-            (org_id, user_id, token, device_code),
+            (org_id, org_slug, user_id, token, device_code),
         )
         self._conn.commit()
         cur.close()
         return True
 
-    def verify_api_token(self, token: str) -> tuple[str, str] | None:
-        """Returns (org_id, user_id) if the token is valid, else None."""
+    def verify_api_token(self, token: str) -> tuple[str, str | None, str] | None:
+        """Returns (org_id, org_slug, user_id) if the token is valid, else None."""
         cur = self._execute(
-            "SELECT org_id, user_id FROM api_tokens WHERE token_hash = %s", (hash_token(token),)
+            "SELECT org_id, org_slug, user_id FROM api_tokens WHERE token_hash = %s", (hash_token(token),)
         )
         row = cur.fetchone()
         cur.close()
-        return (row[0], row[1]) if row else None
+        return (row[0], row[1], row[2]) if row else None

@@ -9,7 +9,7 @@ def _make_client(tmp_path):
     store = ControlPlaneStore(tmp_path / "test.db")
 
     def fake_clerk_auth() -> AuthContext:
-        return AuthContext(user_id="user_1", org_id="org_1")
+        return AuthContext(user_id="user_1", org_id="org_1", org_slug="org-one")
 
     app = FastAPI()
     app.include_router(build_router(store, fake_clerk_auth))
@@ -38,9 +38,9 @@ def test_full_device_auth_flow(tmp_path):
     assert poll_body["status"] == "approved"
     assert poll_body["token"].startswith("rufo_pat_")
 
-    # the issued token verifies back to the approving org/user
+    # the issued token verifies back to the approving org/slug/user
     result = store.verify_api_token(poll_body["token"])
-    assert result == ("org_1", "user_1")
+    assert result == ("org_1", "org-one", "user_1")
 
 
 def test_approve_unknown_code_returns_404(tmp_path):

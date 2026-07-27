@@ -8,6 +8,7 @@ import uuid
 
 import yaml
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from google.cloud import run_v2
 from rufo_core.deploy_config import parse_deploy_config
 from rufo_core.errors import PolicyLoadError
 from rufo_core.manifest import parse_manifest
@@ -21,7 +22,14 @@ from rufo_control_plane.gcp.source_build import (
     submit_build_and_wait,
     upload_source,
 )
-from rufo_control_plane.routes.deployments import _org_fingerprint, _sanitize, _service_id_for, infra_env_for
+from rufo_control_plane.routes.deployments import (
+    _org_fingerprint,
+    _sanitize,
+    _service_id_for,
+    infra_env_for,
+    path_prefix_for,
+    publish_agent_endpoint,
+)
 from rufo_control_plane.settings import Settings
 from rufo_control_plane.store import ControlPlaneStore
 
@@ -78,6 +86,9 @@ def build_router(settings: Settings, store: ControlPlaneStore, auth_dependency) 
         infra_env, cloudsql_instances = infra_env_for(settings)
         env.update(infra_env)
 
+        path_prefix = path_prefix_for(auth.org_slug or auth.org_id, manifest.name)
+        env["RUFO_PUBLIC_PATH_PREFIX"] = path_prefix
+
         build_id = uuid.uuid4().hex[:12]
         dockerfile_content = synthesize_dockerfile(manifest, has_deploy_config=deploy_config_bytes is not None)
         packed = inject_dockerfile(tar_bytes, dockerfile_content)
@@ -102,7 +113,7 @@ def build_router(settings: Settings, store: ControlPlaneStore, auth_dependency) 
             raise HTTPException(status_code=502, detail=f"build failed: {exc}") from exc
 
         try:
-            result = deploy_service(
+            deploy_service(
                 project_id=settings.gcp_project_id,
                 region=settings.gcp_region,
                 service_id=service_id,
@@ -118,7 +129,10 @@ def build_router(settings: Settings, store: ControlPlaneStore, auth_dependency) 
                 min_instances=deploy_config.scaling.min_instances,
                 max_instances=deploy_config.scaling.max_instances,
                 cloudsql_instances=cloudsql_instances,
+                ingress=run_v2.IngressTraffic.INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER,
+                invoker_iam_disabled=True,
             )
+            public_uri = publish_agent_endpoint(settings, service_id, settings.gcp_region, path_prefix)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"Cloud Run deploy failed: {exc}") from exc
 
@@ -128,7 +142,7 @@ def build_router(settings: Settings, store: ControlPlaneStore, auth_dependency) 
             service_id=service_id,
             region=settings.gcp_region,
             image=image_tag,
-            uri=result.uri,
+            uri=public_uri,
             status="running",
         )
 

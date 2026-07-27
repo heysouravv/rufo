@@ -80,20 +80,20 @@ def test_api_token_accepted_when_store_provided(rsa_keypair):
 
     class FakeStore:
         def verify_api_token(self, token):
-            return ("org_from_token", "user_from_token") if token == "rufo_pat_valid" else None
+            return ("org_from_token", "org-slug-from-token", "user_from_token") if token == "rufo_pat_valid" else None
 
     app = FastAPI()
     dep = require_auth(verifier, FakeStore())
 
     @app.get("/whoami")
     def whoami(auth: AuthContext = Depends(dep)) -> dict:
-        return {"user_id": auth.user_id, "org_id": auth.org_id}
+        return {"user_id": auth.user_id, "org_id": auth.org_id, "org_slug": auth.org_slug}
 
     client = TestClient(app)
 
     resp = client.get("/whoami", headers={"Authorization": "Bearer rufo_pat_valid"})
     assert resp.status_code == 200
-    assert resp.json() == {"user_id": "user_from_token", "org_id": "org_from_token"}
+    assert resp.json() == {"user_id": "user_from_token", "org_id": "org_from_token", "org_slug": "org-slug-from-token"}
 
     resp = client.get("/whoami", headers={"Authorization": "Bearer rufo_pat_invalid"})
     assert resp.status_code == 401

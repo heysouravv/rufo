@@ -133,12 +133,12 @@ class ControlPlaneStore:
     def _ensure_device_auth_tables(self) -> None:
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS device_codes (device_code TEXT PRIMARY KEY, user_code TEXT UNIQUE, "
-            "status TEXT DEFAULT 'pending', org_id TEXT, user_id TEXT, api_token TEXT, "
+            "status TEXT DEFAULT 'pending', org_id TEXT, org_slug TEXT, user_id TEXT, api_token TEXT, "
             "created_at REAL, expires_at REAL)"
         )
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS api_tokens (token_hash TEXT PRIMARY KEY, org_id TEXT, "
-            "user_id TEXT, created_at REAL)"
+            "org_slug TEXT, user_id TEXT, created_at REAL)"
         )
 
     def create_device_code(self) -> dict:
@@ -166,7 +166,7 @@ class ControlPlaneStore:
             return {"status": "approved", "token": row["api_token"]}
         return {"status": row["status"]}
 
-    def approve_device_code(self, user_code: str, org_id: str, user_id: str) -> bool:
+    def approve_device_code(self, user_code: str, org_id: str, org_slug: str | None, user_id: str) -> bool:
         self._ensure_device_auth_tables()
         row = self._conn.execute(
             "SELECT device_code, expires_at FROM device_codes WHERE user_code = ? AND status = 'pending'",
@@ -178,22 +178,22 @@ class ControlPlaneStore:
         token = generate_api_token()
         now = time.time()
         self._conn.execute(
-            "INSERT INTO api_tokens (token_hash, org_id, user_id, created_at) VALUES (?, ?, ?, ?)",
-            (hash_token(token), org_id, user_id, now),
+            "INSERT INTO api_tokens (token_hash, org_id, org_slug, user_id, created_at) VALUES (?, ?, ?, ?, ?)",
+            (hash_token(token), org_id, org_slug, user_id, now),
         )
         self._conn.execute(
-            "UPDATE device_codes SET status='approved', org_id=?, user_id=?, api_token=? WHERE device_code=?",
-            (org_id, user_id, token, row["device_code"]),
+            "UPDATE device_codes SET status='approved', org_id=?, org_slug=?, user_id=?, api_token=? WHERE device_code=?",
+            (org_id, org_slug, user_id, token, row["device_code"]),
         )
         self._conn.commit()
         return True
 
-    def verify_api_token(self, token: str) -> tuple[str, str] | None:
+    def verify_api_token(self, token: str) -> tuple[str, str | None, str] | None:
         self._ensure_device_auth_tables()
         row = self._conn.execute(
-            "SELECT org_id, user_id FROM api_tokens WHERE token_hash = ?", (hash_token(token),)
+            "SELECT org_id, org_slug, user_id FROM api_tokens WHERE token_hash = ?", (hash_token(token),)
         ).fetchone()
-        return (row["org_id"], row["user_id"]) if row else None
+        return (row["org_id"], row["org_slug"], row["user_id"]) if row else None
 
 
 def create_store(settings):

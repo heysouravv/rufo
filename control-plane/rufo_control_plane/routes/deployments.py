@@ -7,8 +7,11 @@ import re
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from google.cloud import run_v2
+
 from rufo_control_plane.auth import AuthContext
 from rufo_control_plane.gcp.cloud_run import delete_service, deploy_service, get_service
+from rufo_control_plane.gcp.load_balancer import add_path_rule, ensure_backend_service, ensure_serverless_neg
 from rufo_control_plane.settings import Settings
 from rufo_control_plane.store import ControlPlaneStore
 
@@ -61,6 +64,31 @@ def infra_env_for(settings: Settings) -> tuple[dict[str, str], list[str] | None]
     return {"DATABASE_URL": database_url}, [settings.db_instance_connection_name]
 
 
+def path_prefix_for(org_slug_or_id: str, agent_name: str) -> str:
+    """Org-scoped so two different orgs naming an agent the same thing don't
+    collide: /agents/<org-slug>/<agent-slug>."""
+    org_part = _sanitize(org_slug_or_id, max_len=40) or "org"
+    agent_part = _sanitize(agent_name, max_len=40) or "agent"
+    return f"/agents/{org_part}/{agent_part}"
+
+
+def publish_agent_endpoint(settings: Settings, service_id: str, region: str, path_prefix: str) -> str:
+    """Adds the deployed agent as one more path rule on the shared platform
+    Load Balancer (same one rufo-control-plane/rufo-dashboard already sit
+    behind) and returns the resulting branded public URL. Idempotent --
+    safe to call again on every redeploy of the same agent."""
+    neg_self_link = ensure_serverless_neg(settings.gcp_project_id, region, service_id)
+    backend_service_name = ensure_backend_service(settings.gcp_project_id, service_id, neg_self_link)
+    add_path_rule(
+        project_id=settings.gcp_project_id,
+        url_map_name=settings.url_map_name,
+        path_matcher_name=settings.path_matcher_name,
+        path_prefix=path_prefix,
+        backend_service_name=backend_service_name,
+    )
+    return f"https://{settings.public_domain}{path_prefix}"
+
+
 def build_router(settings: Settings, store: ControlPlaneStore, auth_dependency) -> APIRouter:
     router = APIRouter(prefix="/deployments", tags=["deployments"])
 
@@ -81,8 +109,11 @@ def build_router(settings: Settings, store: ControlPlaneStore, auth_dependency) 
         infra_env, cloudsql_instances = infra_env_for(settings)
         env.update(infra_env)
 
+        path_prefix = path_prefix_for(auth.org_slug or auth.org_id, req.agent_name)
+        env["RUFO_PUBLIC_PATH_PREFIX"] = path_prefix
+
         try:
-            result = deploy_service(
+            deploy_service(
                 project_id=settings.gcp_project_id,
                 region=settings.gcp_region,
                 service_id=service_id,
@@ -98,7 +129,14 @@ def build_router(settings: Settings, store: ControlPlaneStore, auth_dependency) 
                 min_instances=req.min_instances,
                 max_instances=req.max_instances,
                 cloudsql_instances=cloudsql_instances,
+                # Branded endpoint only works if the LB can reach this service
+                # without an IAM invoker binding, same setup as the platform's
+                # own control-plane/dashboard services -- direct .run.app
+                # access is blocked at the network layer instead.
+                ingress=run_v2.IngressTraffic.INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER,
+                invoker_iam_disabled=True,
             )
+            public_uri = publish_agent_endpoint(settings, service_id, settings.gcp_region, path_prefix)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"Cloud Run deploy failed: {exc}") from exc
 
@@ -108,7 +146,7 @@ def build_router(settings: Settings, store: ControlPlaneStore, auth_dependency) 
             service_id=service_id,
             region=settings.gcp_region,
             image=req.image,
-            uri=result.uri,
+            uri=public_uri,
             status="running",
         )
 

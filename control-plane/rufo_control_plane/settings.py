@@ -36,6 +36,13 @@ class Settings(BaseSettings):
 
     cors_origins: str = "http://localhost:8901,https://rufo.eldridgemorgan.com"
 
+    # Branded per-agent endpoints: every deployed agent is added as a path
+    # rule on this same Load Balancer / URL map / path matcher instead of
+    # getting its own domain or raw Cloud Run URL.
+    public_domain: str = "rufo.eldridgemorgan.com"
+    url_map_name: str = "rufo-cloud-urlmap"
+    path_matcher_name: str = "api-matcher"
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
